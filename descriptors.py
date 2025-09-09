@@ -259,9 +259,8 @@ class IntStringDescriptor:
         return 0
 
 
-@dataclass
 class SingleObjectDescriptor(FieldDescriptor):
-    def __init__(self, object_class, default: Optional[SingleObject] = None, default_factory: Optional[Callable] = None):
+    def __init__(self, object_class, default: Optional[SingleObject] = None, default_factory: Optional[Callable] = None, optional=True):
         """
         Initialize the SingleObjectDescriptor with an object class, default value, or factory.
 
@@ -270,11 +269,16 @@ class SingleObjectDescriptor(FieldDescriptor):
             default: Optional default object
             default_factory: Optional callable that returns a default object
         """
+        self._optional = optional
         self.object_class = object_class
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, object_class):
             self.default_factory = lambda: default  # Преобразуем объект в фабрику
+        elif self._optional:
+            self.default_factory = lambda: None
+        elif self.has_required_fields():
+            self.default_factory = self._raise_no_default
         else:
             self.default_factory = self._default_factory
 
@@ -296,9 +300,10 @@ class SingleObjectDescriptor(FieldDescriptor):
         elif isinstance(value, dict):
             value = self.object_class(**value)
         elif not isinstance(value, self.object_class):
-            value = self.default_factory()
+            raise ValueError(f"Value must be a dict or a {self.object_class.__name__} instance, not {type(value)}: {value}")
         # Сохраняем значение в __dict__ экземпляра
         instance.__dict__[self._name] = value
+
 
     def __set_name__(self, owner, name):
         """
@@ -310,6 +315,13 @@ class SingleObjectDescriptor(FieldDescriptor):
         """
         # Запоминаем имя атрибута, чтобы хранить значение в __dict__
         self._name = name
+
+    def _raise_no_default(self):
+        raise ValueError(f"No default value or factory for {self._name}")
+
+    def has_required_fields(self):
+        has_required_fields: Callable = getattr(self.object_class, "has_required_fields")
+        return has_required_fields and not has_required_fields()
 
     def _default_factory(self):
         """ Empty search filter """

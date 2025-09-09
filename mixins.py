@@ -26,12 +26,15 @@ class ImportJsonMixin:
         sf_fields = {sf_field.name: sf_field for sf_field in fields(self)}
         for name, sf_field in sf_fields.items():
             new_value = kwargs.get(name)
-            # --- НОВАЯ ЛОГИКА ---
-            if isinstance(sf_field.default, FieldDescriptor) and name not in kwargs:
-                # если поле управляется дескриптором и ключа нет → передаём весь словарь
-                setattr(self, name, kwargs)
+            is_model = isinstance(sf_field.default, FieldDescriptor)
+            has_value = name in kwargs
+            if is_model:
+                if has_value:
+                    # поле управляется дескриптором и ключ присутствует → передаём только его значение
+                    setattr(self, name, new_value)
+                # если ключ отсутствует, оставляем значение по умолчанию дескриптора
                 continue
-            # --------------------
+            # ---------------------------------
             if new_value is None and sf_field.default_factory is not MISSING:
                 setattr(self, sf_field.name, sf_field.default_factory())
                 continue
@@ -55,11 +58,31 @@ class ImportJsonMixin:
             if not has_default and not has_factory:
                 if field_obj.name not in input_data or input_data[field_obj.name] is None:
                     missing_fields.append(field_obj.name)
-
         if missing_fields:
             raise MissingRequiredFieldsError(
-                f"Missing required fields with no default values: {', '.join(missing_fields)}"
+                f"missing required fields with no default values: {', '.join(missing_fields)}\ninput_data: {input_data}"
             )
+
+    @classmethod
+    def has_required_fields(cls) -> bool:
+        """
+        Check if the dataclass defines any fields that are required
+        (i.e., fields without default values and without default factories).
+
+        Returns:
+            True if there is at least one required field; otherwise False.
+        """
+        try:
+            dc_fields = fields(cls)
+        except TypeError:
+            # Not a dataclass type; by contract, treat as having no required fields
+            return False
+        for field_obj in dc_fields:
+            has_default = field_obj.default is not MISSING
+            has_factory = field_obj.default_factory is not MISSING
+            if not has_default and not has_factory:
+                return True
+        return False
 
 
 @dataclass

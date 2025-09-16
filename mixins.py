@@ -29,12 +29,13 @@ class ImportJsonMixin:
             is_model = isinstance(sf_field.default, FieldDescriptor)
             has_value = name in kwargs
             if is_model:
-                if has_value:
+                if not has_value:
                     # поле управляется дескриптором и ключ присутствует → передаём только его значение
+                    setattr(self, name, kwargs)
+                else:
                     setattr(self, name, new_value)
                 # если ключ отсутствует, оставляем значение по умолчанию дескриптора
                 continue
-            # ---------------------------------
             if new_value is None and sf_field.default_factory is not MISSING:
                 setattr(self, sf_field.name, sf_field.default_factory())
                 continue

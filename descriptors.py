@@ -1,18 +1,24 @@
 """
 Dataclass field descriptors
 """
-import traceback
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Optional, Callable, List, Union, Dict, Any
+
+import uuid
+from typing import Optional, Callable, Union, Dict, Any, List
 
 
-class FieldDescriptor:
+class ObjectFieldDescriptor:
     """
     Base descriptor class for field descriptors.
     This is an abstract base class for all field descriptors in the module.
     """
     pass
+
+
+class FieldDescriptor:
+    """"""
+    def raise_on_value_missed(self):
+        """ """
+        raise ValueError("Value have no default value and must be set")
 
 
 class SingleObject:
@@ -23,93 +29,7 @@ class SingleObject:
     pass
 
 
-COMMON_DATE_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
-
-DATE_FORMATS = [
-    COMMON_DATE_TIME_FORMAT,
-    "%Y%m%dT%H%M%S",
-    "%Y%m%dT%H%M",
-    "%Y.%m.%d %H:%M",
-    "%Y%m%dT%H%M%S"
-]
-class DateTimeDescriptor:
-    """
-    Datetime descriptor
-        it supports:
-            - datetime string values, datetime objects
-            - several dt formats
-    """
-    def __init__(self, default: Optional[datetime] = None, default_factory: Optional[Callable] = None):
-        """
-        Initialize the DateTimeDescriptor with a default value or factory.
-
-        Args:
-            default: Optional default datetime value
-            default_factory: Optional callable that returns a default datetime value
-        """
-        if callable(default_factory):
-            self.default_factory = default_factory
-        elif isinstance(default, datetime):
-            self.default_factory = lambda: default
-        else:
-            self.default_factory = self._default_time
-
-    def __get__(self, instance, owner):
-        """
-        Getter for field value
-        """
-        if instance is None:
-            return self
-        return instance.__dict__.get(self._name, self.default_factory())
-
-    def __set__(self, instance, value):
-        """
-        Setter for field value
-        """
-        if not value:
-            value = self.default_factory()
-        elif isinstance(value, str):
-            value = self._parse_date_string(value, self.default_factory())
-        elif not isinstance(value, datetime):
-            value = self.default_factory()
-        instance.__dict__[self._name] = value
-
-    def __set_name__(self, owner, name):
-        """
-        Set the name of the attribute in the owner class.
-
-        Args:
-            owner: The class that owns the attribute
-            name: The name of the attribute
-        """
-        self._name = name
-
-    @staticmethod
-    def _parse_date_string(value, default):
-        """
-        Parse a string into a datetime object using various formats.
-
-        Args:
-            value: The string to parse
-            default: The default value to return if parsing fails
-
-        Returns:
-            A datetime object if parsing succeeds, otherwise the default value
-        """
-        for date_format in DATE_FORMATS:
-            try:
-                return datetime.strptime(value, date_format)
-            except ValueError:
-                continue
-        return default
-
-    @staticmethod
-    def _default_time():
-        """ Default time: now. """
-        return datetime.now()
-
-
-class FloatStringDescriptor:
+class FloatStringDescriptor(FieldDescriptor):
     """
     Float descriptor
         it supports:
@@ -117,7 +37,7 @@ class FloatStringDescriptor:
             - int and float objects
             - default value or default factory
     """
-    def __init__(self, default: Optional[float] = None, default_factory: Optional[Callable[[], float]] = None):
+    def __init__(self, default: Optional[float] = None, default_factory: Optional[Callable] = None):
         """
         Initialize the FloatStringDescriptor with a default value or factory.
 
@@ -130,7 +50,7 @@ class FloatStringDescriptor:
         elif isinstance(default, (int, float)):
             self.default_factory = lambda: float(default)
         else:
-            self.default_factory = self._default_float
+            self.default_factory = self.raise_on_value_missed
 
     def __get__(self, instance, owner):
         """
@@ -145,7 +65,7 @@ class FloatStringDescriptor:
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name, self.default_factory())
+        return instance.__dict__.get(self._name) or self.default_factory()
 
     def __set__(self, instance, value: Union[str, int, float, None]):
         """
@@ -178,13 +98,8 @@ class FloatStringDescriptor:
         """
         self._name = name
 
-    @staticmethod
-    def _default_float():
-        """ Default float value: 0.0. """
-        return 0.0
 
-
-class IntStringDescriptor:
+class IntStringDescriptor(FieldDescriptor):
     """
     Integer descriptor
         it supports:
@@ -192,7 +107,7 @@ class IntStringDescriptor:
             - int and float objects
             - default value or default factory
     """
-    def __init__(self, default: Optional[int] = None, default_factory: Optional[Callable[[], int]] = None):
+    def __init__(self, default: Optional[int] = None, default_factory: Optional[Callable] = None):
         """
         Initialize the IntStringDescriptor with a default value or factory.
 
@@ -205,7 +120,7 @@ class IntStringDescriptor:
         elif isinstance(default, (int, float)):
             self.default_factory = lambda: int(default)
         else:
-            self.default_factory = self._default_int
+            self.default_factory = self.raise_on_value_missed
 
     def __get__(self, instance, owner):
         """
@@ -220,7 +135,7 @@ class IntStringDescriptor:
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name, self.default_factory())
+        return instance.__dict__.get(self._name) or self.default_factory()
 
     def __set__(self, instance, value: Union[str, int, float, None]):
         """
@@ -253,14 +168,9 @@ class IntStringDescriptor:
         """
         self._name = name
 
-    @staticmethod
-    def _default_int():
-        """ Default int value: 0. """
-        return 0
 
-
-class SingleObjectDescriptor(FieldDescriptor):
-    def __init__(self, object_class, default: Optional[SingleObject] = None, default_factory: Optional[Callable] = None, optional=True):
+class SingleObjectDescriptor(ObjectFieldDescriptor):
+    def __init__(self, object_class, default: Optional[SingleObject] = None, default_factory: Optional[Callable] = None):
         """
         Initialize the SingleObjectDescriptor with an object class, default value, or factory.
 
@@ -269,16 +179,11 @@ class SingleObjectDescriptor(FieldDescriptor):
             default: Optional default object
             default_factory: Optional callable that returns a default object
         """
-        self._optional = optional
         self.object_class = object_class
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, object_class):
             self.default_factory = lambda: default  # Преобразуем объект в фабрику
-        elif self._optional:
-            self.default_factory = lambda: None
-        elif self.has_required_fields():
-            self.default_factory = self._raise_no_default
         else:
             self.default_factory = self._default_factory
 
@@ -289,7 +194,7 @@ class SingleObjectDescriptor(FieldDescriptor):
         if instance is None:
             return self
         # Возвращаем значение из __dict__ экземпляра, если оно существует
-        return instance.__dict__.get(self._name, self.default_factory())
+        return instance.__dict__.get(self._name) or self.default_factory()
 
     def __set__(self, instance, value):
         """
@@ -300,10 +205,9 @@ class SingleObjectDescriptor(FieldDescriptor):
         elif isinstance(value, dict):
             value = self.object_class(**value)
         elif not isinstance(value, self.object_class):
-            raise ValueError(f"Value must be a dict or a {self.object_class.__name__} instance, not {type(value)}: {value}")
+            value = self.default_factory()
         # Сохраняем значение в __dict__ экземпляра
         instance.__dict__[self._name] = value
-
 
     def __set_name__(self, owner, name):
         """
@@ -316,20 +220,12 @@ class SingleObjectDescriptor(FieldDescriptor):
         # Запоминаем имя атрибута, чтобы хранить значение в __dict__
         self._name = name
 
-    def _raise_no_default(self):
-        raise ValueError(f"No default value or factory for {self._name}")
-
-    def has_required_fields(self):
-        has_required_fields: Callable = getattr(self.object_class, "has_required_fields")
-        return has_required_fields and not has_required_fields()
-
     def _default_factory(self):
         """ Empty search filter """
         return self.object_class()
 
 
-@dataclass
-class ObjectListDescriptor(FieldDescriptor):
+class ObjectListDescriptor(ObjectFieldDescriptor):
     def __init__(self, object_class, default: Optional[List[SingleObject]] = None, default_factory: Optional[Callable] = None):
         """
         Initialize the ObjectListDescriptor with an object class, default value, or factory.
@@ -341,7 +237,7 @@ class ObjectListDescriptor(FieldDescriptor):
         """
         self.object_class = object_class
         if callable(default_factory):
-            self.default_factory = default
+            self.default_factory = default_factory
         elif isinstance(default, list):
             self.default_factory = lambda: default
         else:
@@ -353,7 +249,8 @@ class ObjectListDescriptor(FieldDescriptor):
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name, self.default_factory())
+        # return instance.__dict__.get(self._name)
+        return instance.__dict__.get(self._name) or self.default_factory()
 
     def __set__(self, instance, value):
         """
@@ -362,7 +259,13 @@ class ObjectListDescriptor(FieldDescriptor):
         if not value or not isinstance(value, list):
             value = self.default_factory()
         else:
-            value = [self.object_class(**object_dto) for object_dto in value]
+            new_value = []
+            for object_dto in value:
+                if isinstance(object_dto, dict):
+                    new_value.append(self.object_class(**object_dto))
+                elif isinstance(object_dto, self.object_class):
+                    new_value.append(object_dto)
+            value = new_value
         instance.__dict__[self._name] = value
 
     def __set_name__(self, owner, name):
@@ -381,8 +284,7 @@ class ObjectListDescriptor(FieldDescriptor):
         return []
 
 
-@dataclass
-class MapObjectDescriptor:
+class MapObjectDescriptor(ObjectFieldDescriptor):
     def __init__(self, object_class, default: Optional[Dict[str, SingleObject]] = None, default_factory: Optional[Callable] = None):
         """
         Initialize the MapObjectDescriptor with an object class, default value, or factory.
@@ -406,7 +308,7 @@ class MapObjectDescriptor:
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name, self.default_factory())
+        return instance.__dict__.get(self._name) or self.default_factory()
 
     def __set__(self, instance, value: Optional[Dict[str, Any]]):
         """
@@ -420,14 +322,9 @@ class MapObjectDescriptor:
                 if isinstance(obj_data, self.object_class):
                     result[key] = obj_data
                 elif isinstance(obj_data, dict):
-                    try:
-                        result[key] = self.object_class(**obj_data)
-                    except Exception as err:
-                        # Fallback to raw dict if instantiation fails
-                        print(f"{traceback.format_exc()}")
-                        result[key] = obj_data
-                else:
-                    result[key] = obj_data
+                    result[key] = self.object_class(**obj_data)
+                # else:
+                #     result[key] = obj_data
             value = result
         instance.__dict__[self._name] = value
 
@@ -447,3 +344,196 @@ class MapObjectDescriptor:
 
         """
         return {}
+
+
+class StrUuidDescriptor(FieldDescriptor):
+    """
+    UUID descriptor
+        it supports:
+            - uuid.UUID objects
+            - string values (parsed into UUID)
+            - default value or default factory
+    """
+    def __init__(self, default: Optional[uuid.UUID] = None,
+                 default_factory: Optional[Union[Callable[[], uuid.UUID], Callable[[], None]]] = None,
+                 raise_on_error: bool = False):
+        self._raise_on_error = raise_on_error
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, uuid.UUID):
+            self.default_factory = lambda: default
+        elif isinstance(default, str):
+            try:
+                parsed = uuid.UUID(default)
+                self.default_factory = lambda: parsed
+            except (ValueError, TypeError):
+                self.default_factory = self._default_uuid
+        elif isinstance(default, uuid.UUID):
+            self.default_factory = lambda: default
+        else:
+            self.default_factory = self.raise_on_value_missed
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self._name) or self.default_factory()
+
+    def __set__(self, instance, value: Union[str, uuid.UUID, None]):
+        if not value:
+            value = self.default_factory()
+        elif isinstance(value, uuid.UUID):
+            pass
+        elif isinstance(value, str):
+            try:
+                value = uuid.UUID(value)
+            except ValueError as err:
+                if self._raise_on_error:
+                    raise Exception(f"{value} is not valid UUID").with_traceback(err.__traceback__)
+                value = self.default_factory()
+            except TypeError as err:
+                if self._raise_on_error:
+                    raise Exception(f"{type(value)} is not valid type for UUID ").with_traceback(err.__traceback__)
+                value = self.default_factory()
+            except Exception as err:
+                if self._raise_on_error:
+                    raise Exception(f"Unexpected exception with value: {str(value)} {err}").with_traceback(err.__traceback__)
+                value = self.default_factory()
+        elif isinstance(value, type(self)): # не задано значение по-умолчанию - передается экземпляр дескриптора
+            # Не передано значение и нет дефолтного
+            if self._raise_on_error and self.default_factory is None:
+                raise Exception(f"Unsupported type: {str(value)}")
+            value = self.default_factory()
+        else:
+            raise Exception(f"Unsupported type {value}: {type(value)}")
+        instance.__dict__[self._name] = value
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+
+class BoolToIntDescriptor(FieldDescriptor):
+    """Descriptor that coerces various truthy/falsey inputs to integer 1/0."""
+    def __init__(self, default: Optional[Union[bool, int]] = None, default_factory: Optional[Callable] = None):
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, (bool, int)):
+            self.default_factory = lambda: int(bool(default))
+        else:
+            self.default_factory = self.raise_on_value_missed
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self._name) or self.default_factory()
+
+    def __set__(self, instance, value: Union[bool, int, None]):
+        # Allow ImportJsonMixin to pass whole kwargs
+        if value is None:
+            result = self.default_factory()
+        elif isinstance(value, bool):
+            result = int(value)
+        elif isinstance(value, int):
+            result = 1 if value != 0 else 0
+        else:
+            # Only bool/int are allowed per requirements
+            result = self.default_factory()
+        instance.__dict__[self._name] = result
+
+
+class ListOfIntDescriptor(FieldDescriptor):
+    """Descriptor that ensures a list of ints.
+    Priority: value > factory > default
+    """
+    def __init__(self, default: Optional[List[int]] = None, default_factory: Optional[Callable] = None):
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, list):
+            # copy to avoid shared list
+            self.default_factory = lambda: [int(x) for x in default if self._can_int(x)]
+        else:
+            self.default_factory = self.raise_on_value_missed
+
+    @staticmethod
+    def _can_int(x: Any) -> bool:
+        try:
+            int(str(x))
+            return True
+        except Exception:
+            return False
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self._name) or self.default_factory()
+
+    def __set__(self, instance, value: Union[List[Any], None]):
+        if isinstance(value, list):
+            result = []
+            for item in value:
+                try:
+                    result.append(int(item))
+                except Exception:
+                    # skip non-convertible items
+                    pass
+        else:
+            # Only list is accepted per requirements
+            result: List[int] = self.default_factory()
+        instance.__dict__[self._name] = result
+
+
+class ListOfUuidDescriptor(FieldDescriptor):
+    """Descriptor that ensures a list of UUIDs (uuid.UUID). Accepts strings too."""
+    def __init__(self, default: Optional[List[uuid.UUID]] = None, default_factory: Optional[Callable] = None):
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, list):
+            # copy with validation
+            def _df():
+                res = []
+                for x in default:
+                    if isinstance(x, uuid.UUID):
+                        res.append(x)
+                    elif isinstance(x, str):
+                        try:
+                            res.append(uuid.UUID(x))
+                        except Exception:
+                            if self._raise_on_error:
+                                raise
+                return res
+            self.default_factory = _df
+        else:
+            self.default_factory = self.raise_on_value_missed
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self._name) or self.default_factory()
+
+    def __set__(self, instance, value: Union[List[Union[str, uuid.UUID, Any]], None]):
+        if value is None:
+            result: List[uuid.UUID] = self.default_factory()
+        elif isinstance(value, list):
+            result = []
+            for item in value:
+                if isinstance(item, uuid.UUID):
+                    result.append(item)
+                else:
+                    try:
+                        result.append(uuid.UUID(str(item)))
+                    except Exception as err:
+                        if self._raise_on_error:
+                            raise Exception(f"Invalid UUID value: {item}").with_traceback(err.__traceback__)
+                        # skip invalid
+        else:
+            # Only list is accepted
+            result = self.default_factory()
+        instance.__dict__[self._name] = result

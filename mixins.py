@@ -6,7 +6,7 @@ Dataclass based serializer
 from typing import Dict, Any
 from dataclasses import dataclass, fields, MISSING, is_dataclass
 
-from descriptors import FieldDescriptor
+from descriptors import ObjectFieldDescriptor
 
 
 class MissingRequiredFieldsError(Exception):
@@ -26,7 +26,7 @@ class ImportJsonMixin:
         sf_fields = {sf_field.name: sf_field for sf_field in fields(self)}
         for name, sf_field in sf_fields.items():
             new_value = kwargs.get(name)
-            is_model = isinstance(sf_field.default, FieldDescriptor)
+            is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
             has_value = name in kwargs
             if is_model:
                 if not has_value:
@@ -43,7 +43,7 @@ class ImportJsonMixin:
                 setattr(self, sf_field.name, new_value)
                 continue
             _new_value = new_value
-            if not _new_value and sf_field.default is not MISSING and not isinstance(sf_field.default, FieldDescriptor):
+            if not _new_value and sf_field.default is not MISSING and not isinstance(sf_field.default, ObjectFieldDescriptor):
                 _new_value = sf_field.default
             setattr(self, name, _new_value)
 

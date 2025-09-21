@@ -21,12 +21,58 @@ class FieldDescriptor:
         raise ValueError("Value have no default value and must be set")
 
 
-class SingleObject:
+class StringWrapperObject:
     """
-    Base class for single object descriptors.
-    This class serves as a type hint for descriptors that handle single objects.
+    Base class for string value objects, like parent. Provides method for manipulating with strings
     """
-    pass
+    value: Optional[str] = None
+
+
+class StringWrapperDescriptor(FieldDescriptor):
+    """
+    Descriptor wrapper for string value in an object of class object_class,
+    inherited from StringValueObject. The setter accepts a string or an object of
+    object_class. If a string is passed, an instance of object_class is created and
+    assigned to its `value` attribute.
+    """
+    def __init__(self, object_class, default: Optional[StringWrapperObject] = None, default_factory: Optional[Callable] = None, optional=True):
+        self.object_class = object_class
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, object_class):
+            self.default_factory = lambda: default
+        else:
+            # by default, create an empty object
+            self.default_factory = self._default_factory
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self._name) or self.default_factory()
+
+    def __set__(self, instance, value):
+        if value is None or value is False:
+            obj = self.default_factory()
+        elif isinstance(value, self.object_class):
+            obj = value
+        elif isinstance(value, dict):
+            # support for ImportJsonMixin, if a dictionary of constructor parameters is received
+            obj = self.object_class(**value)
+        else:
+            # interpret as a string according to requirements
+            obj = self.object_class()
+            try:
+                setattr(obj, 'value', None if value is None else str(value))
+            except Exception:
+                # if object_class doesn't have a value field, leave it as default
+                pass
+        instance.__dict__[self._name] = obj
+
+    def _default_factory(self):
+        return self.object_class()
 
 
 class FloatStringDescriptor(FieldDescriptor):
@@ -170,7 +216,10 @@ class IntStringDescriptor(FieldDescriptor):
 
 
 class SingleObjectDescriptor(ObjectFieldDescriptor):
-    def __init__(self, object_class, default: Optional[SingleObject] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 object_class,
+                 default: Optional[ObjectFieldDescriptor] = None,
+                 default_factory: Optional[Callable] = None):
         """
         Initialize the SingleObjectDescriptor with an object class, default value, or factory.
 
@@ -226,7 +275,10 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
 
 
 class ObjectListDescriptor(ObjectFieldDescriptor):
-    def __init__(self, object_class, default: Optional[List[SingleObject]] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 object_class,
+                 default: Optional[List[ObjectFieldDescriptor]] = None,
+                 default_factory: Optional[Callable] = None):
         """
         Initialize the ObjectListDescriptor with an object class, default value, or factory.
 
@@ -285,7 +337,10 @@ class ObjectListDescriptor(ObjectFieldDescriptor):
 
 
 class MapObjectDescriptor(ObjectFieldDescriptor):
-    def __init__(self, object_class, default: Optional[Dict[str, SingleObject]] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 object_class,
+                 default: Optional[Dict[str, ObjectFieldDescriptor]] = None,
+                 default_factory: Optional[Callable] = None):
         """
         Initialize the MapObjectDescriptor with an object class, default value, or factory.
 
@@ -366,8 +421,9 @@ class StrUuidDescriptor(FieldDescriptor):
             try:
                 parsed = uuid.UUID(default)
                 self.default_factory = lambda: parsed
-            except (ValueError, TypeError):
-                self.default_factory = self._default_uuid
+            except (ValueError, TypeError) as err:
+                if self._raise_on_error:
+                    raise err
         elif isinstance(default, uuid.UUID):
             self.default_factory = lambda: default
         else:
@@ -489,7 +545,11 @@ class ListOfIntDescriptor(FieldDescriptor):
 
 class ListOfUuidDescriptor(FieldDescriptor):
     """Descriptor that ensures a list of UUIDs (uuid.UUID). Accepts strings too."""
-    def __init__(self, default: Optional[List[uuid.UUID]] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 default: Optional[List[uuid.UUID]] = None,
+                 default_factory: Optional[Callable] = None,
+                 raise_on_error=False):
+        self._raise_on_error = raise_on_error
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, list):
@@ -502,9 +562,9 @@ class ListOfUuidDescriptor(FieldDescriptor):
                     elif isinstance(x, str):
                         try:
                             res.append(uuid.UUID(x))
-                        except Exception:
+                        except (ValueError, TypeError) as err:
                             if self._raise_on_error:
-                                raise
+                                raise err
                 return res
             self.default_factory = _df
         else:

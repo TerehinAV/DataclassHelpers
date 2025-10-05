@@ -43,7 +43,7 @@ class ImportJsonMixin:
                 setattr(self, sf_field.name, new_value)
                 continue
             _new_value = new_value
-            if not _new_value and sf_field.default is not MISSING and not isinstance(sf_field.default, ObjectFieldDescriptor):
+            if _new_value is None and sf_field.default is not MISSING and not isinstance(sf_field.default, ObjectFieldDescriptor):
                 _new_value = sf_field.default
             setattr(self, name, _new_value)
 

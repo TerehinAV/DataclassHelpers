@@ -219,7 +219,8 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
     def __init__(self,
                  object_class,
                  default: Optional[ObjectFieldDescriptor] = None,
-                 default_factory: Optional[Callable] = None):
+                 default_factory: Optional[Callable] = None,
+                 optional=True):
         """
         Initialize the SingleObjectDescriptor with an object class, default value, or factory.
 
@@ -228,13 +229,19 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
             default: Optional default object
             default_factory: Optional callable that returns a default object
         """
+        self._optional = optional
         self.object_class = object_class
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, object_class):
             self.default_factory = lambda: default  # Преобразуем объект в фабрику
+        elif self._optional:
+            self.default_factory = lambda: None
+        elif self.has_required_fields():
+            self.default_factory = self._raise_no_default
         else:
             self.default_factory = self._default_factory
+
 
     def __get__(self, instance, owner):
         """
@@ -243,7 +250,9 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
         if instance is None:
             return self
         # Возвращаем значение из __dict__ экземпляра, если оно существует
-        return instance.__dict__.get(self._name) or self.default_factory()
+        if self._name not in instance.__dict__:
+            instance.__dict__[self._name] = self.default_factory()
+        return instance.__dict__[self._name]
 
     def __set__(self, instance, value):
         """
@@ -254,7 +263,8 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
         elif isinstance(value, dict):
             value = self.object_class(**value)
         elif not isinstance(value, self.object_class):
-            value = self.default_factory()
+            # value = self.default_factory()
+            raise ValueError(f"Value must be a dict or a {self.object_class.__name__} instance, not {type(value)}: {value}")
         # Сохраняем значение в __dict__ экземпляра
         instance.__dict__[self._name] = value
 
@@ -272,7 +282,6 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
     def _default_factory(self):
         """ Empty search filter """
         return self.object_class()
-
 
 class ObjectListDescriptor(ObjectFieldDescriptor):
     def __init__(self,

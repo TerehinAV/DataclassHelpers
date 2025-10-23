@@ -279,6 +279,13 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
         # Запоминаем имя атрибута, чтобы хранить значение в __dict__
         self._name = name
 
+    def _raise_no_default(self):
+        raise ValueError(f"No default value or factory for {self._name}")
+
+    def has_required_fields(self):
+        has_required_fields: Callable = getattr(self.object_class, "has_required_fields")
+        return has_required_fields and has_required_fields()
+
     def _default_factory(self):
         """ Empty search filter """
         return self.object_class()
@@ -317,7 +324,7 @@ class ObjectListDescriptor(ObjectFieldDescriptor):
         """
         Setter for field value
         """
-        if not value or not isinstance(value, list):
+        if value is None or not isinstance(value, list):
             value = self.default_factory()
         else:
             new_value = []

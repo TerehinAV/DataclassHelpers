@@ -51,7 +51,10 @@ class StringWrapperDescriptor(FieldDescriptor):
     def __get__(self, instance, owner):
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value):
         if value is None or value is False:
@@ -111,7 +114,10 @@ class FloatStringDescriptor(FieldDescriptor):
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[str, int, float, None]):
         """
@@ -181,7 +187,10 @@ class IntStringDescriptor(FieldDescriptor):
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[str, int, float, None]):
         """
@@ -318,7 +327,10 @@ class ObjectListDescriptor(ObjectFieldDescriptor):
         if instance is None:
             return self
         # return instance.__dict__.get(self._name)
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value):
         """
@@ -379,7 +391,10 @@ class MapObjectDescriptor(ObjectFieldDescriptor):
         """
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Optional[Dict[str, Any]]):
         """
@@ -448,7 +463,10 @@ class StrUuidDescriptor(FieldDescriptor):
     def __get__(self, instance, owner):
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[str, uuid.UUID, None]):
         if not value:
@@ -499,7 +517,10 @@ class BoolToIntDescriptor(FieldDescriptor):
     def __get__(self, instance, owner):
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[bool, int, None]):
         # Allow ImportJsonMixin to pass whole kwargs
@@ -542,7 +563,10 @@ class ListOfIntDescriptor(FieldDescriptor):
     def __get__(self, instance, owner):
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[List[Any], None]):
         if isinstance(value, list):
@@ -592,7 +616,10 @@ class ListOfUuidDescriptor(FieldDescriptor):
     def __get__(self, instance, owner):
         if instance is None:
             return self
-        return instance.__dict__.get(self._name) or self.default_factory()
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
 
     def __set__(self, instance, value: Union[List[Union[str, uuid.UUID, Any]], None]):
         if value is None:

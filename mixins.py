@@ -128,43 +128,80 @@ class ExportJsonMixin:
         return recursive_to_json(self)
 
 
+@dataclass
 class FlatExportJsonMixin:
     """
-    Export dataclass to flat dict.
+    Add support of recursive exporting with flattening
     """
-    def to_json(self, stringify: bool = False) -> Dict[str, Any]:
+
+    def to_json(self, stringify=False, use_prefix=False):
         """
         Convert the dataclass instance to a flat JSON-serializable dictionary.
 
         Args:
+            use_prefix: bool, if True, add prefixes to nested keys
             stringify: If True, convert non-serializable values to strings
 
         Returns:
-            A flat JSON-serializable dictionary representation of the dataclass
+            A flat JSON-serializable representation of the dataclass
         """
-        def flatten(obj) -> Dict[str, Any]:
+
+        def recursive_to_json(obj, prefix=""):
             """
-            Recursively flatten a dataclass object into a single-level dictionary.
+            Recursively flatten an object into a dict with dot-separated keys.
 
             Args:
-                obj: The object to flatten
+                obj: The object to convert
+                prefix: The current key prefix for nested fields
 
             Returns:
-                A flat dictionary with all nested dataclass fields at the top level
+                A flat dictionary of key-value pairs
             """
-            out: Dict[str, Any] = {}
-            if is_dataclass(obj):
-                for f in fields(obj):
-                    v = getattr(obj, f.name)
-                    if is_dataclass(v):
-                        out.update(flatten(v))
-                    else:
-                        if isinstance(v, bool):
-                            out[f.name] = int(v)
+            flat_dict = {}
+
+            if hasattr(obj, "to_json") and callable(obj.to_json) and not isinstance(obj, type(self)):
+                # if another dataclass has its own exporter
+                nested = obj.to_json(stringify=stringify)
+                # if nested export is also flat — merge directly
+                if isinstance(nested, dict):
+                    for k, v in nested.items():
+                        if use_prefix:
+                            key = f"{prefix}{k}" if not prefix else f"{prefix}.{k}"
                         else:
-                            out[f.name] = str(v) if stringify and v is not None else v
+                            key = k
+                        flat_dict[key] = v
+                else:
+                    flat_dict[prefix.rstrip(".")] = nested
+
+            elif is_dataclass(obj):
+                for field in fields(obj):
+                    value = getattr(obj, field.name)
+                    if use_prefix:
+                        new_prefix = f"{prefix}{field.name}" if not prefix else f"{prefix}.{field.name}"
+                    else:
+                        new_prefix = None
+                    flat_dict.update(recursive_to_json(value, new_prefix))
+
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    if use_prefix:
+                        new_prefix = f"{prefix}[{i}]"
+                    else:
+                        new_prefix = None
+                    flat_dict.update(recursive_to_json(item, new_prefix))
+
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    if use_prefix:
+                        new_prefix = f"{prefix}.{k}" if prefix else str(k)
+                    else:
+                        new_prefix = None
+                    flat_dict.update(recursive_to_json(v, new_prefix))
+
             else:
-                # не ожидается для верхнего вызова, но оставим на всякий
-                out["value"] = int(obj) if isinstance(obj, bool) else (str(obj) if stringify else obj)
-            return out
-        return flatten(self)
+                key = prefix.rstrip(".")
+                flat_dict[key] = str(obj) if stringify else obj
+
+            return flat_dict
+
+        return recursive_to_json(self)

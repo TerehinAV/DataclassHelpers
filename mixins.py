@@ -6,7 +6,7 @@ Dataclass based serializer
 from typing import Dict, Any
 from dataclasses import dataclass, fields, MISSING, is_dataclass
 
-from descriptors import ObjectFieldDescriptor
+from descriptors import ObjectFieldDescriptor, FieldDescriptor
 
 
 class MissingRequiredFieldsError(Exception):
@@ -25,7 +25,17 @@ class ImportJsonMixin:
         self.validate_required_fields(kwargs)
         sf_fields = {sf_field.name: sf_field for sf_field in fields(self)}
         for name, sf_field in sf_fields.items():
-            new_value = kwargs.get(name)
+            # Проверяем наличие alias у дескриптора
+            is_descriptor = isinstance(sf_field.default, (ObjectFieldDescriptor, FieldDescriptor))
+            field_name = name
+            # Если у поля есть дескриптор с alias, пробуем сначала по alias
+
+            if is_descriptor and hasattr(sf_field.default, 'alias') and sf_field.default.alias:
+                if sf_field.default.alias in kwargs:
+                    field_name = sf_field.default.alias
+                # иначе остаётся name
+
+            new_value = kwargs.get(field_name)
             is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
             has_value = name in kwargs
             if is_model:
@@ -91,12 +101,13 @@ class ExportJsonMixin:
     """
     Add support of recursive exporting
     """
-    def to_json(self, stringify=False):
+    def to_json(self, stringify=False, use_alias=False):
         """
         Convert the dataclass instance to a JSON-serializable dictionary.
 
         Args:
             stringify: If True, convert non-serializable values to strings
+            use_alias: If True, use alias from descriptor if available
 
         Returns:
             A JSON-serializable representation of the dataclass
@@ -116,9 +127,22 @@ class ExportJsonMixin:
             if hasattr(obj, 'to_json') and not obj_type == instance_type and callable(obj.to_json):
                 # Use custom to_json method
                 # NOTE: to use specified export implement "to_json/0" instance method
-                return obj.to_json()
+                return obj.to_json(stringify=stringify)
             elif is_dataclass(obj):
-                return {field.name: recursive_to_json(getattr(obj, field.name)) for field in fields(obj)}
+                result = {}
+                for field in fields(obj):
+                    field_value = getattr(obj, field.name)
+
+                    # Определяем ключ для экспорта
+                    export_key = field.name
+                    if use_alias:
+                        # Получаем дескриптор через класс
+                        descriptor = getattr(type(obj), field.name, None)
+                        if descriptor is not None and hasattr(descriptor, 'alias') and descriptor.alias:
+                            export_key = descriptor.alias
+
+                    result[export_key] = recursive_to_json(field_value)
+                return result
             elif isinstance(obj, list):
                 return [recursive_to_json(item) for item in obj]
             elif isinstance(obj, dict):
@@ -134,13 +158,14 @@ class FlatExportJsonMixin:
     Add support of recursive exporting with flattening
     """
 
-    def to_json(self, stringify=False, use_prefix=False):
+    def to_json(self, stringify=False, use_prefix=False, use_alias=False):
         """
         Convert the dataclass instance to a flat JSON-serializable dictionary.
 
         Args:
             use_prefix: bool, if True, add prefixes to nested keys
             stringify: If True, convert non-serializable values to strings
+            use_alias: If True, use alias from descriptor if available
 
         Returns:
             A flat JSON-serializable representation of the dataclass
@@ -176,8 +201,16 @@ class FlatExportJsonMixin:
             elif is_dataclass(obj):
                 for field in fields(obj):
                     value = getattr(obj, field.name)
+
+                    # Определяем имя поля для экспорта
+                    field_name = field.name
+                    if use_alias:
+                        descriptor = getattr(type(obj), field.name, None)
+                        if descriptor is not None and hasattr(descriptor, 'alias') and descriptor.alias:
+                            field_name = descriptor.alias
+
                     if use_prefix:
-                        new_prefix = f"{prefix}{field.name}" if not prefix else f"{prefix}.{field.name}"
+                        new_prefix = f"{prefix}{field_name}" if not prefix else f"{prefix}.{field_name}"
                     else:
                         new_prefix = None
                     flat_dict.update(recursive_to_json(value, new_prefix))

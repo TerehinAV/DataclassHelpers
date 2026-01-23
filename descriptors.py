@@ -4,6 +4,18 @@ Dataclass field descriptors
 
 import uuid
 from typing import Optional, Callable, Union, Dict, Any, List
+from datetime import datetime
+
+
+COMMON_DATE_TIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+DATE_FORMATS = [
+    COMMON_DATE_TIME_FORMAT,
+    "%Y%m%dT%H%M%S",
+    "%Y%m%dT%H%M",
+    "%Y.%m.%d %H:%M",
+    "%Y%m%dT%H%M%S"
+]
 
 
 class ObjectFieldDescriptor:
@@ -28,6 +40,130 @@ class StringWrapperObject:
     value: Optional[str] = None
 
 
+class DateTimeWrapper:
+    """ Export datetime field wrapper """
+    def __init__(self, dt_value: datetime, dt_format: str):
+        self._dt_value = dt_value
+        self._dt_format = dt_format
+
+    def __str__(self):
+        """ str() handler using dt_format """
+        return self._dt_value.strftime(self._dt_format)
+
+    def __get__(self, instance, owner):
+        return self._dt_value
+
+    def __getattr__(self, name):
+        return getattr(self._dt_value, name)
+
+    def to_json(self, stringify=False):
+        """
+        Export method for serialization.
+        Returns raw datetime object for to_json() without stringify,
+        or allows str() conversion when stringify=True.
+        """
+        if stringify:
+            return self._dt_value.strftime(self._dt_format)
+        return self._dt_value
+
+
+class DateTimeDescriptor(FieldDescriptor):
+    """
+    Datetime descriptor
+        it supports:
+            - datetime string values, datetime objects
+            - several dt formats
+    """
+    def __init__(self,
+                 default: Optional[datetime] = None,
+                 default_factory: Optional[Callable] = None,
+                 dt_format: str = "%Y-%m-%dT%H:%M:%S",
+                 alias: Optional[str] = None):
+        """
+        Initialize the DateTimeDescriptor with a default value or factory.
+
+        Args:
+            default: Optional default datetime value
+            default_factory: Optional callable that returns a default datetime value
+        """
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, datetime):
+            self.default_factory = lambda: default
+        else:
+            self.default_factory = self._default_time
+        self.dt_format = dt_format
+        self.alias = alias
+
+    def __get__(self, instance, owner):
+        """
+        Getter for field value
+        """
+        if instance is None:
+            return self
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return DateTimeWrapper(value, dt_format=self.dt_format)
+        return self.default_factory()
+
+    def __set__(self, instance, value):
+        if not value:
+            value = self.default_factory()
+        elif isinstance(value, str):
+            value = self._parse_date_string(value, self.default_factory())
+        elif isinstance(value, (int, float)):
+            value = self.parse_timestamp(value, self.default_factory())
+        elif not isinstance(value, datetime):
+            value = self.default_factory()
+        instance.__dict__[self._name] = value
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    def _parse_date_string(self, value, default):
+        if self._is_timestamp_candidate(value):
+            return self.parse_timestamp(value, default)
+        for date_format in DATE_FORMATS:
+            try:
+                return datetime.strptime(value, date_format)
+            except ValueError:
+                continue
+        return default
+
+    @staticmethod
+    def _is_timestamp_candidate(value: Union[int, float, str]):
+        try:
+            float(value)
+            return True
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def parse_timestamp(value, default):
+        """
+        Преобразует timestamp (в секундах или миллисекундах) в datetime объект (UTC).
+        Поддерживает int, float или строку.
+        """
+        try:
+            # Преобразуем вход в float
+            ts = float(value)
+        except (ValueError, TypeError):
+            return default
+
+        # Определяем формат — секунды или миллисекунды
+        # Всё, что больше 10**11, почти наверняка миллисекунды (т.к. 10**10 ~ 2001 год)
+        if ts > 1e11:
+            ts /= 1000.0  # преобразуем миллисекунды в секунды
+
+        # Возвращаем datetime в UTC
+        return datetime.fromtimestamp(ts)
+
+    @staticmethod
+    def _default_time():
+        """Default time: now."""
+        return datetime.now()
+
+
 class StringWrapperDescriptor(FieldDescriptor):
     """
     Descriptor wrapper for string value in an object of class object_class,
@@ -35,7 +171,11 @@ class StringWrapperDescriptor(FieldDescriptor):
     object_class. If a string is passed, an instance of object_class is created and
     assigned to its `value` attribute.
     """
-    def __init__(self, object_class, default: Optional[StringWrapperObject] = None, default_factory: Optional[Callable] = None, optional=True):
+    def __init__(self,
+                 object_class,
+                 default: Optional[StringWrapperObject] = None,
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         self.object_class = object_class
         if callable(default_factory):
             self.default_factory = default_factory
@@ -44,6 +184,7 @@ class StringWrapperDescriptor(FieldDescriptor):
         else:
             # by default, create an empty object
             self.default_factory = self._default_factory
+        self.alias = alias
 
     def __set_name__(self, owner, name):
         self._name = name
@@ -86,7 +227,10 @@ class FloatStringDescriptor(FieldDescriptor):
             - int and float objects
             - default value or default factory
     """
-    def __init__(self, default: Optional[float] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 default: Optional[float] = None,
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         """
         Initialize the FloatStringDescriptor with a default value or factory.
 
@@ -100,6 +244,7 @@ class FloatStringDescriptor(FieldDescriptor):
             self.default_factory = lambda: float(default)
         else:
             self.default_factory = self.raise_on_value_missed
+        self.alias = alias
 
     def __get__(self, instance, owner):
         """
@@ -159,7 +304,10 @@ class IntStringDescriptor(FieldDescriptor):
             - int and float objects
             - default value or default factory
     """
-    def __init__(self, default: Optional[int] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 default: Optional[int] = None,
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         """
         Initialize the IntStringDescriptor with a default value or factory.
 
@@ -173,6 +321,7 @@ class IntStringDescriptor(FieldDescriptor):
             self.default_factory = lambda: int(default)
         else:
             self.default_factory = self.raise_on_value_missed
+        self.alias = alias
 
     def __get__(self, instance, owner):
         """
@@ -224,11 +373,69 @@ class IntStringDescriptor(FieldDescriptor):
         self._name = name
 
 
+class IntStringToBoolDescriptor(FieldDescriptor):
+    """
+    Bool descriptor based on int/string values
+        it supports:
+            - bool values
+            - int values (0 -> False, non-zero -> True)
+            - string values ("0" -> False, anything else -> True)
+            - default value or default factory
+    """
+    def __init__(self, default: Optional[bool] = None, default_factory: Optional[Callable[[], bool]] = None):
+        if callable(default_factory):
+            self.default_factory = default_factory
+        elif isinstance(default, bool):
+            self.default_factory = lambda: default
+        else:
+            self.default_factory = self._default_bool
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        value = instance.__dict__.get(self._name)
+        if value is not None:
+            return value
+        return self.default_factory()
+
+    def __set__(self, instance, value: Union[str, int, bool, None]):
+        if value is None or value == "":
+            value = self.default_factory()
+        elif isinstance(value, bool):
+            pass  # already good
+        elif isinstance(value, int):
+            value = bool(value)
+        elif isinstance(value, str):
+            try:
+                value = bool(int(value))
+            except ValueError:
+                # fallback: "true"/"false" style strings
+                lowered = value.strip().lower()
+                if lowered in ("true", "yes", "y", "on"):
+                    value = True
+                elif lowered in ("false", "no", "n", "off"):
+                    value = False
+                else:
+                    value = self.default_factory()
+        else:
+            value = self.default_factory()
+        instance.__dict__[self._name] = value
+
+    def __set_name__(self, owner, name):
+        self._name = name
+
+    @staticmethod
+    def _default_bool():
+        """Default bool value: False."""
+        return False
+
+
 class SingleObjectDescriptor(ObjectFieldDescriptor):
     def __init__(self,
                  object_class,
                  default: Optional[ObjectFieldDescriptor] = None,
                  default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None,
                  optional=True):
         """
         Initialize the SingleObjectDescriptor with an object class, default value, or factory.
@@ -250,7 +457,7 @@ class SingleObjectDescriptor(ObjectFieldDescriptor):
             self.default_factory = self._raise_no_default
         else:
             self.default_factory = self._default_factory
-
+        self.alias = alias
 
     def __get__(self, instance, owner):
         """
@@ -303,7 +510,8 @@ class ObjectListDescriptor(ObjectFieldDescriptor):
     def __init__(self,
                  object_class,
                  default: Optional[List[ObjectFieldDescriptor]] = None,
-                 default_factory: Optional[Callable] = None):
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         """
         Initialize the ObjectListDescriptor with an object class, default value, or factory.
 
@@ -319,6 +527,7 @@ class ObjectListDescriptor(ObjectFieldDescriptor):
             self.default_factory = lambda: default
         else:
             self.default_factory = self._default_factory
+        self.alias = alias
 
     def __get__(self, instance, owner):
         """
@@ -368,7 +577,8 @@ class MapObjectDescriptor(ObjectFieldDescriptor):
     def __init__(self,
                  object_class,
                  default: Optional[Dict[str, ObjectFieldDescriptor]] = None,
-                 default_factory: Optional[Callable] = None):
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         """
         Initialize the MapObjectDescriptor with an object class, default value, or factory.
 
@@ -384,6 +594,7 @@ class MapObjectDescriptor(ObjectFieldDescriptor):
             self.default_factory = lambda: default
         else:
             self.default_factory = self._default_factory
+        self.alias = alias
 
     def __get__(self, instance, owner):
         """
@@ -503,13 +714,17 @@ class StrUuidDescriptor(FieldDescriptor):
 
 class BoolToIntDescriptor(FieldDescriptor):
     """Descriptor that coerces various truthy/falsey inputs to integer 1/0."""
-    def __init__(self, default: Optional[Union[bool, int]] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 default: Optional[Union[bool, int]] = None,
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, (bool, int)):
             self.default_factory = lambda: int(bool(default))
         else:
             self.default_factory = self.raise_on_value_missed
+        self.alias = alias
 
     def __set_name__(self, owner, name):
         self._name = name
@@ -540,7 +755,10 @@ class ListOfIntDescriptor(FieldDescriptor):
     """Descriptor that ensures a list of ints.
     Priority: value > factory > default
     """
-    def __init__(self, default: Optional[List[int]] = None, default_factory: Optional[Callable] = None):
+    def __init__(self,
+                 default: Optional[List[int]] = None,
+                 default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None):
         if callable(default_factory):
             self.default_factory = default_factory
         elif isinstance(default, list):
@@ -548,6 +766,7 @@ class ListOfIntDescriptor(FieldDescriptor):
             self.default_factory = lambda: [int(x) for x in default if self._can_int(x)]
         else:
             self.default_factory = self.raise_on_value_missed
+        self.alias = alias
 
     @staticmethod
     def _can_int(x: Any) -> bool:
@@ -588,6 +807,7 @@ class ListOfUuidDescriptor(FieldDescriptor):
     def __init__(self,
                  default: Optional[List[uuid.UUID]] = None,
                  default_factory: Optional[Callable] = None,
+                 alias: Optional[str] = None,
                  raise_on_error=False):
         self._raise_on_error = raise_on_error
         if callable(default_factory):
@@ -609,6 +829,7 @@ class ListOfUuidDescriptor(FieldDescriptor):
             self.default_factory = _df
         else:
             self.default_factory = self.raise_on_value_missed
+        self.alias = alias
 
     def __set_name__(self, owner, name):
         self._name = name

@@ -126,4 +126,4 @@ if __name__ == "__main__":
     calendar_dto = calendar_obj.to_json()
     print(calendar_dto)
     print()
-    print(Calendar(**calendar_dto))
+    print(Calendar(**calendar_dto).to_json())

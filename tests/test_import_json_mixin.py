@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from descriptors import (
     DateTimeDescriptor,
     IntStringDescriptor,
@@ -58,6 +60,18 @@ class AliasObjectListModel(ImportJsonMixin):
         ImportJsonMixin.__init__(self, **kwargs)
 
 
+@dataclass
+class DescriptorMissingSemanticsModel(ImportJsonMixin):
+    missing_required: Any = field(default=IntStringDescriptor())
+    explicit_none_default: Any = field(default=IntStringDescriptor(default=None))
+    explicit_none_factory: Any = field(
+        default=IntStringDescriptor(default_factory=lambda: None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
 def test_required_field_validation_raises_on_missing_field() -> None:
     error: Any = None
     try:
@@ -97,6 +111,34 @@ def test_calendar_style_nested_object_list_and_map_import() -> None:
 
 
 def test_current_import_semantics_for_object_descriptor_alias_key_only() -> None:
-    model = AliasObjectListModel(**{"@values": [{"caption": "x"}]})
+    with pytest.raises(MissingRequiredFieldsError) as exc_info:
+        AliasObjectListModel(**{"@values": [{"caption": "x"}]})
 
-    assert model.values == []
+    assert "current_day" in str(exc_info.value)
+
+
+def test_descriptor_backed_required_missing_field_raises_on_init() -> None:
+    with pytest.raises(MissingRequiredFieldsError) as exc_info:
+        DescriptorMissingSemanticsModel()
+
+    assert "missing_required" in str(exc_info.value)
+
+
+def test_descriptor_default_none_and_factory_none_are_valid_defaults() -> None:
+    model = DescriptorMissingSemanticsModel(missing_required="11")
+
+    assert model.missing_required == 11
+    assert model.explicit_none_default is None
+    assert model.explicit_none_factory is None
+
+
+def test_descriptor_explicit_none_input_is_not_treated_as_missing() -> None:
+    model = DescriptorMissingSemanticsModel(
+        missing_required=1,
+        explicit_none_default=None,
+        explicit_none_factory=None,
+    )
+
+    assert model.missing_required == 1
+    assert model.explicit_none_default is None
+    assert model.explicit_none_factory is None

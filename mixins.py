@@ -25,37 +25,48 @@ class ImportJsonMixin:
         self.validate_required_fields(kwargs)
         sf_fields = {sf_field.name: sf_field for sf_field in fields(self)}
         for name, sf_field in sf_fields.items():
-            # Проверяем наличие alias у дескриптора
-            is_descriptor = isinstance(sf_field.default, (ObjectFieldDescriptor, FieldDescriptor))
-            field_name = name
-            # Если у поля есть дескриптор с alias, пробуем сначала по alias
+            descriptor = (
+                sf_field.default
+                if isinstance(
+                    sf_field.default, (ObjectFieldDescriptor, FieldDescriptor)
+                )
+                else None
+            )
+            input_key = name
+            descriptor_alias = (
+                getattr(descriptor, "alias", None) if descriptor is not None else None
+            )
+            if descriptor_alias and descriptor_alias in kwargs:
+                input_key = descriptor_alias
 
-            if is_descriptor and hasattr(sf_field.default, 'alias') and sf_field.default.alias:
-                if sf_field.default.alias in kwargs:
-                    field_name = sf_field.default.alias
-                # иначе остаётся name
+            has_value = input_key in kwargs
+            if has_value:
+                setattr(self, name, kwargs[input_key])
+                continue
 
-            new_value = kwargs.get(field_name)
-            is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
-            has_value = name in kwargs
-            if is_model:
-                if not has_value:
-                    # поле управляется дескриптором и ключ присутствует → передаём только его значение
-                    setattr(self, name, kwargs)
-                else:
-                    setattr(self, name, new_value)
-                # если ключ отсутствует, оставляем значение по умолчанию дескриптора
+            if descriptor is not None:
                 continue
-            if new_value is None and sf_field.default_factory is not MISSING:
-                setattr(self, sf_field.name, sf_field.default_factory())
+
+            if sf_field.default_factory is not MISSING:
+                setattr(self, name, sf_field.default_factory())
                 continue
-            elif new_value is not None and sf_field.default_factory is not MISSING:
-                setattr(self, sf_field.name, new_value)
-                continue
-            _new_value = new_value
-            if _new_value is None and sf_field.default is not MISSING and not isinstance(sf_field.default, ObjectFieldDescriptor):
-                _new_value = sf_field.default
-            setattr(self, name, _new_value)
+
+            if sf_field.default is not MISSING:
+                setattr(self, name, sf_field.default)
+
+    @staticmethod
+    def _is_descriptor_required(descriptor: Any) -> bool:
+        descriptor_default = getattr(descriptor, "default", MISSING)
+        descriptor_factory = getattr(descriptor, "default_factory", MISSING)
+        if descriptor_default is MISSING and descriptor_factory is MISSING:
+            return True
+        if descriptor_default is MISSING and callable(descriptor_factory):
+            if descriptor_factory == getattr(descriptor, "raise_on_value_missed", None):
+                return True
+            factory_fn = getattr(descriptor_factory, "__func__", None)
+            if factory_fn is FieldDescriptor.raise_on_value_missed:
+                return True
+        return False
 
     def validate_required_fields(self, input_data: Dict[str, Any]):
         """
@@ -64,11 +75,29 @@ class ImportJsonMixin:
         """
         missing_fields = []
         for field_obj in fields(self):
+            descriptor = (
+                field_obj.default
+                if isinstance(
+                    field_obj.default, (ObjectFieldDescriptor, FieldDescriptor)
+                )
+                else None
+            )
+
+            if descriptor is not None:
+                is_required = self._is_descriptor_required(descriptor)
+                if is_required:
+                    descriptor_alias = getattr(descriptor, "alias", None)
+                    has_value = field_obj.name in input_data or (
+                        descriptor_alias in input_data if descriptor_alias else False
+                    )
+                    if not has_value:
+                        missing_fields.append(field_obj.name)
+                continue
+
             has_default = field_obj.default is not MISSING
             has_factory = field_obj.default_factory is not MISSING
-            if not has_default and not has_factory:
-                if field_obj.name not in input_data or input_data[field_obj.name] is None:
-                    missing_fields.append(field_obj.name)
+            if not has_default and not has_factory and field_obj.name not in input_data:
+                missing_fields.append(field_obj.name)
         if missing_fields:
             raise MissingRequiredFieldsError(
                 f"missing required fields with no default values: {', '.join(missing_fields)}\ninput_data: {input_data}"
@@ -101,6 +130,7 @@ class ExportJsonMixin:
     """
     Add support of recursive exporting
     """
+
     def to_json(self, stringify=False, use_alias=False):
         """
         Convert the dataclass instance to a JSON-serializable dictionary.
@@ -112,6 +142,7 @@ class ExportJsonMixin:
         Returns:
             A JSON-serializable representation of the dataclass
         """
+
         def recursive_to_json(obj):
             """
             Recursively convert an object to a JSON-serializable representation.
@@ -124,7 +155,11 @@ class ExportJsonMixin:
             """
             obj_type = type(obj)
             instance_type = type(self)
-            if hasattr(obj, 'to_json') and not obj_type == instance_type and callable(obj.to_json):
+            if (
+                hasattr(obj, "to_json")
+                and not obj_type == instance_type
+                and callable(obj.to_json)
+            ):
                 # Use custom to_json method
                 # NOTE: to use specified export implement "to_json/0" instance method
                 return obj.to_json(stringify=stringify)
@@ -138,7 +173,11 @@ class ExportJsonMixin:
                     if use_alias:
                         # Получаем дескриптор через класс
                         descriptor = getattr(type(obj), field.name, None)
-                        if descriptor is not None and hasattr(descriptor, 'alias') and descriptor.alias:
+                        if (
+                            descriptor is not None
+                            and hasattr(descriptor, "alias")
+                            and descriptor.alias
+                        ):
                             export_key = descriptor.alias
 
                     result[export_key] = recursive_to_json(field_value)
@@ -149,6 +188,7 @@ class ExportJsonMixin:
                 return {key: recursive_to_json(value) for key, value in obj.items()}
             else:
                 return str(obj) if stringify is True else obj
+
         return recursive_to_json(self)
 
 
@@ -184,7 +224,11 @@ class FlatExportJsonMixin:
             """
             flat_dict = {}
 
-            if hasattr(obj, "to_json") and callable(obj.to_json) and not isinstance(obj, type(self)):
+            if (
+                hasattr(obj, "to_json")
+                and callable(obj.to_json)
+                and not isinstance(obj, type(self))
+            ):
                 # if another dataclass has its own exporter
                 nested = obj.to_json(stringify=stringify)
                 # if nested export is also flat — merge directly
@@ -206,11 +250,19 @@ class FlatExportJsonMixin:
                     field_name = field.name
                     if use_alias:
                         descriptor = getattr(type(obj), field.name, None)
-                        if descriptor is not None and hasattr(descriptor, 'alias') and descriptor.alias:
+                        if (
+                            descriptor is not None
+                            and hasattr(descriptor, "alias")
+                            and descriptor.alias
+                        ):
                             field_name = descriptor.alias
 
                     if use_prefix:
-                        new_prefix = f"{prefix}{field_name}" if not prefix else f"{prefix}.{field_name}"
+                        new_prefix = (
+                            f"{prefix}{field_name}"
+                            if not prefix
+                            else f"{prefix}.{field_name}"
+                        )
                     else:
                         new_prefix = None
                     flat_dict.update(recursive_to_json(value, new_prefix))

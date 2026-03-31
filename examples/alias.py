@@ -10,7 +10,7 @@ from mixins import ImportJsonMixin, ExportJsonMixin
 @dataclass
 class Model(ImportJsonMixin, ExportJsonMixin):
     """ Some model """
-    foo: str = field(default=IntStringDescriptor())
+    foo: str = field(default=IntStringDescriptor(default=None))
     a_foo: str = field(default=IntStringDescriptor(default_factory=lambda: None, alias="@foo"))
 
     def __init__(self, **kwargs):
@@ -36,3 +36,6 @@ if __name__ == "__main__":
     print(model_with_alias)
     print(model_with_alias.to_json())
     print(model_with_alias.to_json(use_alias=True))
+
+    model = Model()
+    print(model)

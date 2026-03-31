@@ -190,7 +190,8 @@ def test_string_wrapper_descriptor_supports_string_dict_object_and_default():
     assert obj.value.label == "mapped"
 
     obj.value = False
-    assert obj.value.value == "fallback"
+    assert isinstance(obj.value, SampleStringWrapper)
+    assert obj.value.value == "False"
 
 
 def test_float_string_descriptor_coercion_and_default_fallback():

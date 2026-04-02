@@ -3,10 +3,10 @@ Dataclass based serializer
 + export and import mixins
 """
 
-from typing import Dict, Any
-from dataclasses import dataclass, fields, MISSING, is_dataclass
+from dataclasses import MISSING, dataclass, fields, is_dataclass
+from typing import Any, Dict
 
-from descriptors import ObjectFieldDescriptor, FieldDescriptor
+from descriptors import FieldDescriptor, ObjectFieldDescriptor
 
 
 class MissingRequiredFieldsError(Exception):
@@ -40,6 +40,15 @@ class ImportJsonMixin:
                 input_key = descriptor_alias
 
             has_value = input_key in kwargs
+            if isinstance(sf_field.default, ObjectFieldDescriptor):
+                if not has_value:
+                    # if this field is under descriptor it has not an input value
+                    # -> send full kwargs dict into descriptor setter
+                    setattr(self, name, kwargs)
+                else:
+                    setattr(self, name, kwargs[input_key])
+                continue
+
             if has_value:
                 setattr(self, name, kwargs[input_key])
                 continue
@@ -68,6 +77,53 @@ class ImportJsonMixin:
                 return True
         return False
 
+    @classmethod
+    def _object_descriptor_can_be_built_from_flat_input(
+        cls, descriptor: Any, input_data: Dict[str, Any]
+    ) -> bool:
+        object_class = getattr(descriptor, "object_class", None)
+        if object_class is None or not hasattr(object_class, "__dataclass_fields__"):
+            return False
+
+        try:
+            nested_fields = fields(object_class)
+        except TypeError:
+            return False
+
+        for nested_field in nested_fields:
+            nested_descriptor = (
+                nested_field.default
+                if isinstance(
+                    nested_field.default, (ObjectFieldDescriptor, FieldDescriptor)
+                )
+                else None
+            )
+
+            nested_alias = (
+                getattr(nested_descriptor, "alias", None)
+                if nested_descriptor is not None
+                else None
+            )
+            nested_has_value = nested_field.name in input_data or (
+                nested_alias in input_data if nested_alias else False
+            )
+
+            if nested_descriptor is not None and isinstance(
+                nested_descriptor, ObjectFieldDescriptor
+            ):
+                if nested_has_value:
+                    return True
+                if cls._object_descriptor_can_be_built_from_flat_input(
+                    nested_descriptor, input_data
+                ):
+                    return True
+                continue
+
+            if nested_has_value:
+                return True
+
+        return False
+
     def validate_required_fields(self, input_data: Dict[str, Any]):
         """
         Validates that all required fields are present in the input data.
@@ -90,6 +146,14 @@ class ImportJsonMixin:
                     has_value = field_obj.name in input_data or (
                         descriptor_alias in input_data if descriptor_alias else False
                     )
+                    if (
+                        not has_value
+                        and isinstance(descriptor, ObjectFieldDescriptor)
+                        and self._object_descriptor_can_be_built_from_flat_input(
+                            descriptor, input_data
+                        )
+                    ):
+                        has_value = True
                     if not has_value:
                         missing_fields.append(field_obj.name)
                 continue

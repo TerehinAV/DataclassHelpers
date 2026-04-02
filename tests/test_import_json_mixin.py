@@ -8,6 +8,7 @@ from descriptors import (
     IntStringDescriptor,
     MapObjectDescriptor,
     ObjectListDescriptor,
+    SingleObjectDescriptor,
 )
 from mixins import ImportJsonMixin, MissingRequiredFieldsError
 
@@ -67,6 +68,35 @@ class DescriptorMissingSemanticsModel(ImportJsonMixin):
     explicit_none_factory: Any = field(
         default=IntStringDescriptor(default_factory=lambda: None)
     )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedLeafImport(ImportJsonMixin):
+    leaf_value: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedMiddleImport(ImportJsonMixin):
+    nested_leaf: Any = field(
+        default=SingleObjectDescriptor(NestedLeafImport, optional=False)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedRootImport(ImportJsonMixin):
+    nested_middle: Any = field(
+        default=SingleObjectDescriptor(NestedMiddleImport, optional=False)
+    )
+    root_name: str = "root"
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
@@ -142,3 +172,20 @@ def test_descriptor_explicit_none_input_is_not_treated_as_missing() -> None:
     assert model.missing_required == 1
     assert model.explicit_none_default is None
     assert model.explicit_none_factory is None
+
+
+def test_single_object_descriptor_supports_nested_structured_input() -> None:
+    model = NestedRootImport(
+        nested_middle={"nested_leaf": {"leaf_value": "12"}},
+        root_name="structured",
+    )
+
+    assert model.root_name == "structured"
+    assert model.nested_middle.nested_leaf.leaf_value == 12
+
+
+def test_single_object_descriptor_supports_flat_input_for_nested_models() -> None:
+    model = NestedRootImport(leaf_value="15", root_name="flat")
+
+    assert model.root_name == "flat"
+    assert model.nested_middle.nested_leaf.leaf_value == 15

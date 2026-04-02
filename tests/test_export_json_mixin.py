@@ -7,6 +7,7 @@ from descriptors import (
     IntStringDescriptor,
     MapObjectDescriptor,
     ObjectListDescriptor,
+    SingleObjectDescriptor,
 )
 from mixins import ExportJsonMixin, ImportJsonMixin
 
@@ -62,6 +63,41 @@ class CalendarExport(ImportJsonMixin):
     to_json = ExportJsonMixin.to_json
 
 
+@dataclass
+class NestedLeafExport(ImportJsonMixin):
+    leaf_value: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+    to_json = ExportJsonMixin.to_json
+
+
+@dataclass
+class NestedMiddleExport(ImportJsonMixin):
+    nested_leaf: Any = field(
+        default=SingleObjectDescriptor(NestedLeafExport, optional=False)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+    to_json = ExportJsonMixin.to_json
+
+
+@dataclass
+class NestedRootExport(ImportJsonMixin):
+    nested_middle: Any = field(
+        default=SingleObjectDescriptor(NestedMiddleExport, optional=False)
+    )
+    root_name: str = "root"
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+    to_json = ExportJsonMixin.to_json
+
+
 def test_export_alias_keys_when_enabled() -> None:
     model = AliasExportModel(foo="103", **{"@foo": "102"})
 
@@ -101,3 +137,32 @@ def test_recursive_export_with_nested_objects_lists_and_maps() -> None:
     assert days[0]["current_day"] == "2024-02-11T09:00:00"
     assert days[1]["caption"] == "two"
     assert day_map["x"]["current_day"] == "2024-02-13T09:00:00"
+
+
+def test_exported_nested_object_structure_is_importable_by_same_model() -> None:
+    original = NestedRootExport(
+        nested_middle={"nested_leaf": {"leaf_value": "21"}},
+        root_name="round-trip",
+    )
+
+    exported = original.to_json()
+    restored = NestedRootExport(**exported)
+
+    assert exported == {
+        "nested_middle": {"nested_leaf": {"leaf_value": 21}},
+        "root_name": "round-trip",
+    }
+    assert restored.to_json() == exported
+
+
+def test_exported_calendar_structure_is_importable_by_same_model() -> None:
+    original = CalendarExport(
+        current_date="2024-02-10T09:00:00",
+        days=[{"current_day": "2024-02-11T09:00:00", "caption": "one"}],
+        day_map={"x": {"current_day": "2024-02-13T09:00:00", "caption": "mapped"}},
+    )
+
+    exported = original.to_json(stringify=True)
+    restored = CalendarExport(**exported)
+
+    assert restored.to_json(stringify=True) == exported

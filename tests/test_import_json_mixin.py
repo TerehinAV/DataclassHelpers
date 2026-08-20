@@ -189,3 +189,101 @@ def test_single_object_descriptor_supports_flat_input_for_nested_models() -> Non
 
     assert model.root_name == "flat"
     assert model.nested_middle.nested_leaf.leaf_value == 15
+
+
+@dataclass
+class FlatDefaultAddress(ImportJsonMixin):
+    street: Any = field(default=None)
+    city: Any = field(default=None)
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class FlatDefaultPerson(ImportJsonMixin):
+    name: Any = field(default=None)
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedRootWithDefault(ImportJsonMixin):
+    root_name: str = "root"
+    address: Any = field(
+        default=SingleObjectDescriptor(FlatDefaultAddress, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedRootWithFactory(ImportJsonMixin):
+    root_name: str = "root"
+    address: Any = field(
+        default=SingleObjectDescriptor(
+            FlatDefaultAddress,
+            default_factory=lambda: FlatDefaultAddress(street="unknown"),
+        )
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class PseudoFillRoot(ImportJsonMixin):
+    name: Any = field(default=None)
+    person: Any = field(
+        default=SingleObjectDescriptor(FlatDefaultPerson, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class NestedRootNoDefault(ImportJsonMixin):
+    address: Any = field(default=SingleObjectDescriptor(FlatDefaultAddress))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_object_descriptor_default_none_wins_over_flat_input() -> None:
+    model = NestedRootWithDefault(street="Main", root_name="x")
+
+    assert model.root_name == "x"
+    assert model.address is None
+
+
+def test_object_descriptor_default_factory_used_when_key_absent() -> None:
+    model = NestedRootWithFactory()
+
+    assert model.address.street == "unknown"
+    assert model.address.city is None
+
+
+def test_object_descriptor_no_pseudo_fill_from_same_named_root_field() -> None:
+    model = PseudoFillRoot(name="order-1")
+
+    assert model.name == "order-1"
+    assert model.person is None
+
+
+def test_object_descriptor_nested_key_still_overrides_default() -> None:
+    model = NestedRootWithDefault(
+        address={"street": "Main", "city": "X"}, root_name="x"
+    )
+
+    assert model.address.street == "Main"
+    assert model.address.city == "X"
+
+
+def test_object_descriptor_without_default_still_maps_flat_input() -> None:
+    model = NestedRootNoDefault(street="Main", city="X")
+
+    assert model.address.street == "Main"
+    assert model.address.city == "X"

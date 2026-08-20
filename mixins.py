@@ -22,6 +22,13 @@ class ImportJsonMixin:
     Add support for importing a dict object with any keys,
     even if they are not expected in the current dataclass.
     Only the fields defined in the dataclass will be used.
+
+    For a nested-model field (an ObjectFieldDescriptor) whose key is absent
+    in the input data:
+        - an explicitly declared default/default_factory wins — the input
+          is NOT fed into the nested model;
+        - with no default declared, the input is treated as a flat JSON
+          object and mapped onto the nested model.
     """
 
     def __init__(self, **kwargs):
@@ -45,11 +52,20 @@ class ImportJsonMixin:
             is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
             has_value = input_key in kwargs
             if is_model:
-                if not has_value:
-                    # the field is managed by a descriptor and the key is present → pass only its value
-                    setattr(self, name, kwargs)
-                else:
+                if has_value:
+                    # the key is present → pass only its value to the descriptor
                     setattr(self, name, kwargs[input_key])
+                elif not self._is_descriptor_required(descriptor):
+                    # the key is absent, but the descriptor declares an explicit
+                    # default/default_factory → let the descriptor produce it;
+                    # feeding the whole input here would silently override the
+                    # default and could pseudo-fill the nested model from
+                    # unrelated same-named root keys
+                    continue
+                else:
+                    # the key is absent and no default is declared → treat the
+                    # input as a flat JSON object and map it onto the nested model
+                    setattr(self, name, kwargs)
                 continue
 
             if has_value:

@@ -1,12 +1,15 @@
 """
-Dataclass based serializer
-+ export and import mixins
+Import and export mixins for dataclass models.
+
+The module contains ``ImportJsonMixin`` for parsing dicts with arbitrary
+keys and ``ExportJsonMixin`` / ``FlatExportJsonMixin`` for recursive
+export into a JSON-compatible structure.
 """
 
-from dataclasses import MISSING, dataclass, fields, is_dataclass
-from typing import Any, Dict
+from typing import Dict, Any, Optional
+from dataclasses import dataclass, fields, MISSING, is_dataclass
 
-from descriptors import FieldDescriptor, ObjectFieldDescriptor
+from descriptors import ObjectFieldDescriptor, FieldDescriptor
 
 
 class MissingRequiredFieldsError(Exception):
@@ -39,11 +42,11 @@ class ImportJsonMixin:
             if descriptor_alias and descriptor_alias in kwargs:
                 input_key = descriptor_alias
 
+            is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
             has_value = input_key in kwargs
-            if isinstance(sf_field.default, ObjectFieldDescriptor):
+            if is_model:
                 if not has_value:
-                    # if this field is under descriptor it has not an input value
-                    # -> send full kwargs dict into descriptor setter
+                    # the field is managed by a descriptor and the key is present → pass only its value
                     setattr(self, name, kwargs)
                 else:
                     setattr(self, name, kwargs[input_key])
@@ -164,8 +167,70 @@ class ImportJsonMixin:
                 missing_fields.append(field_obj.name)
         if missing_fields:
             raise MissingRequiredFieldsError(
-                f"missing required fields with no default values: {', '.join(missing_fields)}\ninput_data: {input_data}"
+                f"Model {self.__class__.__name__} missing required fields with no default values: " +
+                f"{', '.join(missing_fields)}\ninput_data: {self.mask_secrets(input_data)}"
             )
+
+    @staticmethod
+    def mask_secrets(data, secret_keys=None, mask_char='*', mask_length=8):
+        """
+        Recursively masks the values of secret keys in a dict.
+
+        Args:
+            data: A dict, list, or other data structure to process
+            secret_keys: A set or list of keys to mask.
+                        If None, a default set is used.
+            mask_char: The character used for masking (default '*')
+            mask_length: The length of the mask (default 8)
+
+        Returns:
+            A copy of the input data with secrets masked
+        """
+        if secret_keys is None:
+            secret_keys = {
+                'password', 'passwd', 'pwd', 'secret', 'token', 'api_key',
+                'apikey', 'access_token', 'refresh_token', 'private_key',
+                'auth', 'authorization', 'credentials', 'credential',
+                'secret_key', 'session', 'session_id', 'cookie',
+                'login', 'username', 'user', 'email'
+            }
+
+        # Convert to a set for fast lookup
+        if not isinstance(secret_keys, set):
+            secret_keys = set(secret_keys)
+
+        # Helper to check whether a key is secret
+        def is_secret_key(key):
+            if not isinstance(key, str):
+                return False
+            key_lower = key.lower()
+            # Check for an exact match or containment of a secret word
+            return key_lower in secret_keys or any(secret in key_lower for secret in secret_keys)
+
+        # Create the mask
+        mask = mask_char * mask_length
+
+        # Recursive processing function
+        def _mask_recursive(obj):
+            if isinstance(obj, dict):
+                result = {}
+                for key, value in obj.items():
+                    if is_secret_key(key):
+                        # Mask the value
+                        result[key] = mask
+                    else:
+                        # Process the value recursively
+                        result[key] = _mask_recursive(value)
+                return result
+            elif isinstance(obj, list):
+                return [_mask_recursive(item) for item in obj]
+            elif isinstance(obj, tuple):
+                return tuple(_mask_recursive(item) for item in obj)
+            else:
+                # Return the value as is (strings, numbers, etc.)
+                return obj
+
+        return _mask_recursive(data)
 
     @classmethod
     def has_required_fields(cls) -> bool:
@@ -213,6 +278,7 @@ class ExportJsonMixin:
 
             Args:
                 obj: The object to convert
+                field_descriptor: Optional descriptor for formatting
 
             Returns:
                 A JSON-serializable representation of the object
@@ -220,31 +286,33 @@ class ExportJsonMixin:
             obj_type = type(obj)
             instance_type = type(self)
             if (
-                hasattr(obj, "to_json")
-                and not obj_type == instance_type
-                and callable(obj.to_json)
+                    hasattr(obj, "to_json")
+                    and not obj_type == instance_type
+                    and callable(obj.to_json)
             ):
                 # Use custom to_json method
                 # NOTE: to use specified export implement "to_json/0" instance method
                 return obj.to_json(stringify=stringify)
             elif is_dataclass(obj):
                 result = {}
-                for field in fields(obj):
-                    field_value = getattr(obj, field.name)
+                for field_obj in fields(obj):
+                    field_value = getattr(obj, field_obj.name)
 
-                    # Определяем ключ для экспорта
-                    export_key = field.name
-                    if use_alias:
-                        # Получаем дескриптор через класс
-                        descriptor = getattr(type(obj), field.name, None)
-                        if (
-                            descriptor is not None
-                            and hasattr(descriptor, "alias")
-                            and descriptor.alias
-                        ):
+                    # Get the descriptor through the class
+                    descriptor = getattr(type(obj), field_obj.name, None)
+
+                    # Determine the export key
+                    export_key = field_obj.name
+                    if use_alias and isinstance(descriptor, FieldDescriptor):
+                        if hasattr(descriptor, "alias") and descriptor.alias:
                             export_key = descriptor.alias
 
-                    result[export_key] = recursive_to_json(field_value)
+                    # Use the descriptor's format_value if available
+                    if isinstance(descriptor, FieldDescriptor) and hasattr(descriptor, 'format_value'):
+                        formatted_value = descriptor.format_value(field_value, stringify=stringify)
+                        result[export_key] = recursive_to_json(formatted_value)
+                    else:
+                        result[export_key] = recursive_to_json(field_value)
                 return result
             elif isinstance(obj, list):
                 return [recursive_to_json(item) for item in obj]
@@ -275,7 +343,7 @@ class FlatExportJsonMixin:
             A flat JSON-serializable representation of the dataclass
         """
 
-        def recursive_to_json(obj, prefix=""):
+        def recursive_to_json(obj, prefix: Optional[str]=""):
             """
             Recursively flatten an object into a dict with dot-separated keys.
 
@@ -289,9 +357,9 @@ class FlatExportJsonMixin:
             flat_dict = {}
 
             if (
-                hasattr(obj, "to_json")
-                and callable(obj.to_json)
-                and not isinstance(obj, type(self))
+                    hasattr(obj, "to_json")
+                    and callable(obj.to_json)
+                    and not isinstance(obj, type(self))
             ):
                 # if another dataclass has its own exporter
                 nested = obj.to_json(stringify=stringify)
@@ -310,14 +378,14 @@ class FlatExportJsonMixin:
                 for field in fields(obj):
                     value = getattr(obj, field.name)
 
-                    # Определяем имя поля для экспорта
+                    # Determine the field name for export
                     field_name = field.name
                     if use_alias:
                         descriptor = getattr(type(obj), field.name, None)
                         if (
-                            descriptor is not None
-                            and hasattr(descriptor, "alias")
-                            and descriptor.alias
+                                descriptor is not None
+                                and hasattr(descriptor, "alias")
+                                and descriptor.alias
                         ):
                             field_name = descriptor.alias
 

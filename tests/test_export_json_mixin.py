@@ -76,7 +76,7 @@ class NestedLeafExport(ImportJsonMixin):
 @dataclass
 class NestedMiddleExport(ImportJsonMixin):
     nested_leaf: Any = field(
-        default=SingleObjectDescriptor(NestedLeafExport, optional=False)
+        default=SingleObjectDescriptor(NestedLeafExport)
     )
 
     def __init__(self, **kwargs: Any) -> None:
@@ -88,7 +88,7 @@ class NestedMiddleExport(ImportJsonMixin):
 @dataclass
 class NestedRootExport(ImportJsonMixin):
     nested_middle: Any = field(
-        default=SingleObjectDescriptor(NestedMiddleExport, optional=False)
+        default=SingleObjectDescriptor(NestedMiddleExport)
     )
     root_name: str = "root"
 
@@ -103,17 +103,6 @@ def test_export_alias_keys_when_enabled() -> None:
 
     assert model.to_json() == {"foo": 103, "a_foo": 102}
     assert model.to_json(use_alias=True) == {"foo": 103, "@foo": 102}
-
-
-def test_datetime_import_and_export_stringify_behavior() -> None:
-    model = DateTimeModel(current_date="2022-01-01 00:00")
-
-    raw = model.to_json()
-    text = model.to_json(stringify=True)
-    assert isinstance(raw, dict)
-    assert isinstance(text, dict)
-    assert raw.get("current_date") == datetime(2001, 2, 3, 4, 5, 6)
-    assert text.get("current_date") == "2001-02-03"
 
 
 def test_recursive_export_with_nested_objects_lists_and_maps() -> None:

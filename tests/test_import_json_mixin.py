@@ -84,7 +84,7 @@ class NestedLeafImport(ImportJsonMixin):
 @dataclass
 class NestedMiddleImport(ImportJsonMixin):
     nested_leaf: Any = field(
-        default=SingleObjectDescriptor(NestedLeafImport, optional=False)
+        default=SingleObjectDescriptor(NestedLeafImport)
     )
 
     def __init__(self, **kwargs: Any) -> None:
@@ -94,7 +94,7 @@ class NestedMiddleImport(ImportJsonMixin):
 @dataclass
 class NestedRootImport(ImportJsonMixin):
     nested_middle: Any = field(
-        default=SingleObjectDescriptor(NestedMiddleImport, optional=False)
+        default=SingleObjectDescriptor(NestedMiddleImport)
     )
     root_name: str = "root"
 

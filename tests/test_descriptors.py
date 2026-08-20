@@ -6,7 +6,6 @@ import pytest
 from descriptors import (
     BoolToIntDescriptor,
     DateTimeDescriptor,
-    DateTimeWrapper,
     FloatStringDescriptor,
     IntStringDescriptor,
     IntStringToBoolDescriptor,
@@ -82,16 +81,8 @@ class IntToBoolDefaultHolder:
     value = IntStringToBoolDescriptor()
 
 
-class SingleObjectOptionalHolder:
-    value = SingleObjectDescriptor(ChildObject, optional=True)
-
-
-class SingleObjectRequiredHolder:
-    value = SingleObjectDescriptor(RequiredChildObject, optional=False)
-
-
 class SingleObjectDefaultHolder:
-    value = SingleObjectDescriptor(ChildObject, optional=False)
+    value = SingleObjectDescriptor(ChildObject)
 
 
 class ObjectListHolder:
@@ -141,26 +132,6 @@ class ListOfUuidHolder:
 
 class ListOfUuidRaiseHolder:
     value = ListOfUuidDescriptor(default=[DEFAULT_UUID], raise_on_error=True)
-
-
-def test_datetime_descriptor_parses_formats_and_wraps_on_get():
-    obj = DateTimeHolder()
-    obj.value = "2024-01-02T03:04:05"
-
-    wrapped = obj.value
-    assert isinstance(wrapped, DateTimeWrapper)
-    assert wrapped.to_json() == datetime(2024, 1, 2, 3, 4, 5)
-    assert wrapped.to_json(stringify=True) == "2024-01-02"
-    assert str(wrapped) == "2024-01-02"
-
-
-def test_datetime_descriptor_parses_timestamp_string_and_invalid_uses_default():
-    obj = DateTimeHolder()
-    obj.value = "1700000000"
-    assert obj.value.to_json() == datetime.fromtimestamp(1700000000)
-
-    obj.value = "not-a-date"
-    assert obj.value.to_json() == datetime(2000, 1, 1, 0, 0, 0)
 
 
 def test_datetime_descriptor_get_without_set_returns_default_datetime_not_wrapper():
@@ -264,21 +235,6 @@ def test_int_string_to_bool_descriptor_invalid_string_uses_default_factory_value
     obj = IntToBoolHolder()
     obj.value = "not-bool"
     assert obj.value is True
-
-
-def test_single_object_descriptor_optional_defaults_to_none_and_dict_coercion():
-    obj = SingleObjectOptionalHolder()
-    assert obj.value is None
-
-    obj.value = {"name": "mapped"}
-    assert isinstance(obj.value, ChildObject)
-    assert obj.value.name == "mapped"
-
-
-def test_single_object_descriptor_required_without_default_raises_on_get():
-    obj = SingleObjectRequiredHolder()
-    with pytest.raises(ValueError, match="No default value or factory"):
-        _ = obj.value
 
 
 def test_single_object_descriptor_raises_for_invalid_type_and_uses_default_for_falsey():

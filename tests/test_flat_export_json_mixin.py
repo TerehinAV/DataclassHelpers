@@ -48,3 +48,33 @@ def test_flat_export_default_no_prefix_current_behavior() -> None:
     except AttributeError as exc:
         error = exc
     assert error is not None
+
+
+@dataclass
+class NestedWithExporter:
+    def to_json(self, stringify: bool = False) -> dict:
+        return {"a": 1, "b": 2}
+
+
+@dataclass
+class NestedScalarExporter:
+    def to_json(self, stringify: bool = False) -> str:
+        return "scalar"
+
+
+@dataclass
+class FlatWithExporters(FlatExportJsonMixin):
+    dict_exporter: NestedWithExporter = field(default_factory=NestedWithExporter)
+    scalar_exporter: NestedScalarExporter = field(
+        default_factory=NestedScalarExporter
+    )
+
+
+def test_flat_export_merges_nested_custom_exporters() -> None:
+    result = FlatWithExporters().to_json(use_prefix=True)
+
+    assert result == {
+        "dict_exporter.a": 1,
+        "dict_exporter.b": 2,
+        "scalar_exporter": "scalar",
+    }

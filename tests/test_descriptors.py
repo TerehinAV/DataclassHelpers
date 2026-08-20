@@ -4,17 +4,24 @@ import uuid
 import pytest
 
 from descriptors import (
+    AnyToListDescriptor,
+    AnyToStringDescriptor,
     BoolToIntDescriptor,
     DateTimeDescriptor,
+    DateTimeStringDescriptor,
+    DateTimeTimestampDescriptor,
     FloatStringDescriptor,
     IntStringDescriptor,
     IntStringToBoolDescriptor,
+    JsonDumpObjectDescriptor,
     ListOfIntDescriptor,
+    ListOfStringDescriptor,
     ListOfUuidDescriptor,
     MapObjectDescriptor,
     ObjectListDescriptor,
     SingleObjectDescriptor,
     StrUuidDescriptor,
+    StringBoolDescriptor,
     StringWrapperDescriptor,
     StringWrapperObject,
 )
@@ -375,3 +382,191 @@ def test_list_of_uuid_descriptor_raise_on_error_for_invalid_item():
     obj = ListOfUuidRaiseHolder()
     with pytest.raises(Exception, match="Invalid UUID value"):
         obj.value = ["bad"]
+
+
+class DateTimeStringHolder:
+    value = DateTimeStringDescriptor(dt_format="%Y-%m-%d", default=datetime(2024, 1, 2))
+
+
+class DateTimeTimestampHolder:
+    value = DateTimeTimestampDescriptor(default="0")
+
+
+class DateTimeTimestampsHolder:
+    value = DateTimeDescriptor(
+        default_factory=lambda: datetime(2000, 1, 1), dt_format="%Y-%m-%d"
+    )
+
+
+class JsonDumpHolder:
+    value = JsonDumpObjectDescriptor(
+        ChildObject, default=ChildObject(name="fallback")
+    )
+
+
+class StringBoolHolder:
+    value = StringBoolDescriptor(default=False)
+
+
+class ListOfStringHolder:
+    value = ListOfStringDescriptor(default=["a", 1, ["skip"]])
+
+
+class AnyToStringHolder:
+    value = AnyToStringDescriptor(default="fallback")
+
+
+class AnyToListHolder:
+    value = AnyToListDescriptor(default=[1, 2])
+
+
+def test_date_time_string_descriptor_formats_datetime_and_timestamps():
+    obj = DateTimeStringHolder()
+    assert obj.value == "2024-01-02"
+
+    obj.value = datetime(2024, 2, 3, 4, 5)
+    assert obj.value == "2024-02-03"
+
+    expected = datetime.fromtimestamp(1704160800).strftime("%Y-%m-%d")
+    obj.value = 1704160800
+    assert obj.value == expected
+
+    obj.value = str(1704160800)
+    assert obj.value == expected
+
+
+def test_date_time_string_descriptor_parses_known_formats_and_falls_back():
+    obj = DateTimeStringHolder()
+    obj.value = "2024-01-02T10:00:00"
+    assert obj.value == "2024-01-02"
+
+    obj.value = "not-a-date"
+    assert obj.value == "2024-01-02"
+
+
+def test_date_time_timestamp_descriptor_converts_inputs_to_ts_strings():
+    obj = DateTimeTimestampHolder()
+    assert obj.value == "0"
+
+    obj.value = 1704160800
+    assert obj.value == "1704160800"
+
+    obj.value = 1704160800.5
+    assert obj.value == "1704160800.5"
+
+    obj.value = "1704160800"
+    assert obj.value == "1704160800"
+
+    expected = str(int(datetime(2024, 1, 2, 3, 20).astimezone().timestamp()))
+    obj.value = datetime(2024, 1, 2, 3, 20)
+    assert obj.value == expected
+
+    obj.value = "2024-01-02T03:20:00"
+    assert obj.value == "0"
+
+
+def test_datetime_descriptor_accepts_timestamps_seconds_and_milliseconds():
+    obj = DateTimeTimestampsHolder()
+    obj.value = 1704160800
+    assert obj.value == datetime.fromtimestamp(1704160800)
+
+    obj.value = 1704160800000
+    assert obj.value == datetime.fromtimestamp(1704160800)
+
+    obj.value = "1704160800"
+    assert obj.value == datetime.fromtimestamp(1704160800)
+
+
+def test_datetime_descriptor_unparseable_string_falls_back_to_default():
+    obj = DateTimeTimestampsHolder()
+    obj.value = "not-a-date"
+    assert obj.value == datetime(2000, 1, 1)
+
+
+def test_json_dump_descriptor_accepts_json_string_dict_and_instance():
+    obj = JsonDumpHolder()
+    assert obj.value.name == "fallback"
+
+    obj.value = '{"name": "from-json"}'
+    assert isinstance(obj.value, ChildObject)
+    assert obj.value.name == "from-json"
+
+    obj.value = {"name": "from-dict"}
+    assert obj.value.name == "from-dict"
+
+    obj.value = None
+    assert obj.value.name == "fallback"
+
+
+def test_json_dump_descriptor_rejects_non_dict_json_and_types():
+    obj = JsonDumpHolder()
+    with pytest.raises(ValueError, match="is not a dict"):
+        obj.value = "[1, 2]"
+
+    with pytest.raises(ValueError, match="is not an object"):
+        obj.value = 123
+
+
+def test_string_bool_descriptor_parses_bool_strings_and_json_values():
+    obj = StringBoolHolder()
+    assert not obj.value
+
+    obj.value = True
+    assert obj.value is True
+
+    obj.value = "1"
+    assert obj.value is True
+
+    obj.value = "0"
+    assert not obj.value
+
+    obj.value = "true"
+    assert obj.value is True
+
+    obj.value = "false"
+    assert not obj.value
+
+    obj.value = "not-json"
+    assert obj.value is True
+
+    obj.value = None
+    assert not obj.value
+
+
+def test_list_of_string_descriptor_keeps_strings_and_coerces_builtin_scalars():
+    obj = ListOfStringHolder()
+    assert obj.value == ["a", "1"]
+
+    obj.value = ["x", 2, 3.5, True, [1], {"k": 1}, None]
+    assert obj.value == ["x", "2", "3.5", "True", "None"]
+
+    obj.value = "not-a-list"
+    assert obj.value == ["a", "1"]
+
+
+def test_any_to_string_descriptor_converts_values_to_str():
+    obj = AnyToStringHolder()
+    assert obj.value == "fallback"
+
+    obj.value = 42
+    assert obj.value == "42"
+
+    obj.value = None
+    assert obj.value == "fallback"
+
+
+def test_any_to_list_descriptor_converts_collections_and_validates():
+    obj = AnyToListHolder()
+    assert obj.value == [1, 2]
+
+    obj.value = (3, 4)
+    assert obj.value == [3, 4]
+
+    obj.value = {5}
+    assert obj.value == [5]
+
+    obj.value = None
+    assert obj.value == [1, 2]
+
+    with pytest.raises(ValueError, match="expected list, tuple or set"):
+        obj.value = "nope"

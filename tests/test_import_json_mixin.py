@@ -287,3 +287,56 @@ def test_object_descriptor_without_default_still_maps_flat_input() -> None:
 
     assert model.address.street == "Main"
     assert model.address.city == "X"
+
+
+@dataclass
+class PlainFactoryModel(ImportJsonMixin):
+    name: str = "n"
+    tags: Any = field(default_factory=lambda: ["t"])
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_plain_default_factory_field_filled_when_key_absent() -> None:
+    model = PlainFactoryModel(name="x")
+
+    assert model.name == "x"
+    assert model.tags == ["t"]
+
+
+def test_has_required_fields_detects_required_fields() -> None:
+    assert ImportJsonMixin.has_required_fields() is False
+    assert RequiredModel.has_required_fields() is True
+
+
+def test_mask_secrets_masks_matching_keys_recursively() -> None:
+    data = {
+        "password": "secret",
+        "visible": "keep",
+        "user_email": "a@b.c",
+        "nested": {"api_key": "k", "ok": 1},
+        "items": [{"token": "t"}, "plain"],
+        "pair": ({"auth": "a"},),
+        1: "non-str-key",
+    }
+
+    masked = ImportJsonMixin.mask_secrets(data)
+
+    assert masked["password"] == "********"
+    assert masked["visible"] == "keep"
+    assert masked["user_email"] == "********"
+    assert masked["nested"] == {"api_key": "********", "ok": 1}
+    assert masked["items"][0] == {"token": "********"}
+    assert masked["items"][1] == "plain"
+    assert masked["pair"][0] == {"auth": "********"}
+    assert masked[1] == "non-str-key"
+    assert data["password"] == "secret"
+
+
+def test_mask_secrets_accepts_custom_secret_keys() -> None:
+    masked = ImportJsonMixin.mask_secrets(
+        {"custom": "v", "password": "keep"}, secret_keys=["custom"]
+    )
+
+    assert masked == {"custom": "********", "password": "keep"}

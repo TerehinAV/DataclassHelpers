@@ -392,7 +392,11 @@ class DateTimeDescriptor(FieldDescriptor):
         if value is None or value == "":
             value = self._call_default_factory()
         elif isinstance(value, str):
-            value = parse_date_string(value, lambda: self._call_default_factory())
+            parsed = parse_date_string(value, VALUE_NOT_SET)
+            value = (
+                parsed if parsed is not VALUE_NOT_SET
+                else self._call_default_factory()
+            )
         elif isinstance(value, (int, float)):
             value = parse_timestamp(value, lambda: self._call_default_factory())
         elif not isinstance(value, (datetime, date)):
@@ -489,8 +493,11 @@ class DateTimeStringDescriptor(FieldDescriptor):
                 dt = get_datetime_from_timestamp_local_tz(float(value))
             else:
                 dt = self._parse_date_string(value)
-            dt = get_datetime_local_tz(dt)
-            result = dt.strftime(self._format)
+            if dt is None:
+                result = self._call_default_factory()
+            else:
+                dt = get_datetime_local_tz(dt)
+                result = dt.strftime(self._format)
         else:
             result = self._call_default_factory()
             check = True
@@ -499,7 +506,8 @@ class DateTimeStringDescriptor(FieldDescriptor):
             self._check_datetime_string_candidate(result)
         instance.__dict__[self._name] = result
 
-    def _parse_date_string(value, default):
+    @staticmethod
+    def _parse_date_string(value, default=None):
 
         for date_format in DATE_FORMATS:
             try:

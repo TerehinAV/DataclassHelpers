@@ -59,3 +59,23 @@ Datetime descriptors accept datetime objects, format strings, and raw timestamps
 ### Collections: silent skipping of invalid items
 
 List descriptors (`ListOfIntDescriptor`, `ListOfUuidDescriptor`, `ListOfStringDescriptor`) skip items that cannot be converted rather than raising. The UUID descriptors accept a `raise_on_error=True` flag to turn skipping into an exception; `StrUuidDescriptor` uses the same flag for invalid UUID strings, falling back to its default when disabled.
+
+## Running Tests
+
+Install the dev dependencies and run the suite:
+
+```bash
+pip install pytest pytest-cov
+```
+
+Run all tests:
+
+```bash
+just test        # or: pytest
+```
+
+Run tests with line coverage for `descriptors.py` and `mixins.py`:
+
+```bash
+just coverage    # or: pytest --cov=descriptors --cov=mixins --cov-report=term-missing
+```

@@ -61,6 +61,12 @@ class ImportJsonMixin:
                     # feeding the whole input here would silently override the
                     # default and could pseudo-fill the nested model from
                     # unrelated same-named root keys
+                    descriptor_default = getattr(descriptor, "default", MISSING)
+                    descriptor_factory = getattr(descriptor, "default_factory", MISSING)
+                    value = (descriptor_default if descriptor_default is not MISSING
+                             else descriptor_factory() if descriptor_factory is not MISSING else MISSING)
+                    if value is not MISSING:
+                        setattr(self, name, value)
                     continue
                 else:
                     # the key is absent and no default is declared → treat the

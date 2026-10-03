@@ -17,32 +17,47 @@ Use Cases:
 
 The library emphasizes type safety, flexible default values, and graceful error handling while maintaining clean, declarative dataclass definitions.
 
-## Non-Obvious Import Scenarios
+## `ImportJsonMixin` Input Resolution
 
-### Nested models: flat input vs. explicit defaults
+`ImportJsonMixin` accepts JSON-compatible keyword arguments, ignores unknown keys, resolves aliases, and validates required fields. Nested object fields can be populated explicitly or inferred from a flat payload.
 
-For a field backed by an object descriptor (`SingleObjectDescriptor`, `JsonDumpObjectDescriptor`, `ObjectListDescriptor`, `MapObjectDescriptor`), the import result depends on the input shape:
+### Resolution order
 
-| Input state | Result |
+Nested fields are resolved in this order:
+
+1. **Explicit field name or alias.** Its value is passed directly to the descriptor. This always takes precedence over flat fields.
+2. **Payload shape.** When no explicit nested value exists, the complete payload must be structurally flat before implicit mapping is considered.
+3. **Schema uniqueness.** Every field name and alias in the complete recursive dataclass hierarchy must have exactly one owner.
+4. **Nested-model evidence.** At least one flat key must belong to the candidate nested model.
+5. **Validation or default.** Selected nested models are validated recursively; otherwise descriptor defaults apply.
+
+| Condition | Result |
 |---|---|
-| Field key present (by name or alias) | The key's value is passed to the descriptor; a dict is unpacked into the nested model |
-| Key absent, descriptor declares `default`/`default_factory` | The declared default wins — the input is **not** fed into the nested model, even when root-level keys coincide with nested model field names |
-| Key absent, no default declared | The whole input dict is treated as a flat JSON object and mapped onto the nested model |
+| Field name or alias is present | Import that explicit nested value |
+| Any payload value is a dictionary or nested list | Disable all implicit flat mapping |
+| Payload values are JSON scalars or one-dimensional scalar lists | Payload shape is flat |
+| Any field name or alias is duplicated anywhere in the model hierarchy | Disable flat mapping for the entire model |
+| The flat payload contains keys owned by an unambiguous nested model | Map the complete payload onto that nested model |
+| No flat key selects an optional nested model | Use its `default` or `default_factory` |
+| Selected flat data omits a required nested field | Raise `MissingRequiredFieldsError` |
 
-The third row is what enables flat imports: `OrderFlat(street="Main", city="Y")` produces `address=Address(street="Main", city="Y")` without nesting.
+JSON dump strings are treated as ordinary scalar strings and are not parsed when payload shape is determined. Instances accepted directly by object descriptors may still be supplied through an explicit field key, but model instances are outside the flat JSON-input contract.
 
-The second row resolves a conflict that would otherwise fail silently: if the default were ignored, `Order(name="order-1")` would pseudo-fill `person=Person(name="order-1")` from an unrelated same-named root field, and a submodel with required fields would raise an error naming the nested model instead of the root. A runnable demonstration is `examples/flat_import_conflict.py`.
+### Global schema ambiguity
 
-### Required-field validation
+Field names and aliases are collected recursively from the root model and all nested dataclasses. A duplicate at any level disables flat mapping globally, even if the conflicting key is absent from the current payload. Explicit hierarchical input remains available for ambiguous schemas.
 
-A field without a default (including descriptor-backed fields whose factory is `raise_on_value_missed`) raises `MissingRequiredFieldsError` when its key is absent. Two nuances:
+This conservative rule prevents a root field from pseudo-filling a nested model and prevents the same flat key from selecting multiple sibling branches.
 
-- A required object-descriptor field passes validation when its nested model can be built from flat root-level keys (see the row 3 above).
-- The error message masks secret-like keys (`password`, `token`, `api_key`, …) before echoing the input data.
+### Defaults and required fields
 
-### Aliased keys
+A descriptor default is used only when no explicit value or unambiguous flat data selects that field. Once flat data selects a nested model, its required fields are validated recursively. Partial data raises `MissingRequiredFieldsError`; optional nested fields continue to use their own defaults.
 
-When a descriptor declares an `alias` and **both** the field name and the alias are present in the input, the alias value wins. Unknown keys that match no field or alias are silently ignored.
+Validation errors include masked input data. Secret-like keys such as `password`, `token`, and `api_key` are replaced before the payload is added to the exception message.
+
+### Aliases and unknown keys
+
+When both a field name and its alias are present, the alias value wins. Aliases also participate in the global uniqueness check. Keys matching neither a field name nor an alias are ignored.
 
 ### Missing values: `None` and empty string
 

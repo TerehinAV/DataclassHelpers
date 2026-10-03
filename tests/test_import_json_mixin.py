@@ -1,4 +1,6 @@
+from collections import UserDict
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import pytest
@@ -271,6 +273,32 @@ def test_nested_structure_disables_implicit_flat_mapping() -> None:
     assert model.nested is None
 
 
+def test_mapping_object_disables_implicit_flat_mapping() -> None:
+    metadata = UserDict({"source": "api"})
+
+    model = StructuredPayloadRoot(
+        metadata=metadata,
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata is metadata
+    assert model.nested is None
+
+
+def test_list_of_mapping_objects_disables_implicit_flat_mapping() -> None:
+    metadata = [UserDict({"source": "api"})]
+
+    model = StructuredPayloadRoot(
+        metadata=metadata,
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata is metadata
+    assert model.nested is None
+
+
 @dataclass
 class CalendarDayImport(ImportJsonMixin):
     current_day: Any = field(default=DateTimeDescriptor())
@@ -278,6 +306,25 @@ class CalendarDayImport(ImportJsonMixin):
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class CalendarDayRoot(ImportJsonMixin):
+    day: Any = field(
+        default=SingleObjectDescriptor(CalendarDayImport, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_date_leaf_allows_flat_mapping() -> None:
+    current_day = date(2026, 9, 1)
+
+    model = CalendarDayRoot(current_day=current_day, caption="Example")
+
+    assert model.day.current_day == current_day
+    assert model.day.caption == "Example"
 
 
 @dataclass
@@ -619,10 +666,141 @@ def test_any_duplicate_alias_disables_flat_import_for_model() -> None:
     assert model.nested is None
 
 
+@dataclass
+class SummaryDetails(ImportJsonMixin):
+    title: str
+    note: str = ""
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class HierarchyDetails(ImportJsonMixin):
+    ancestor_key: Any = None
+    is_group: Any = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class MetricDetails(ImportJsonMixin):
+    elapsed: int = 0
+    total: int = 0
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class ContextSummaryDetails(ImportJsonMixin):
+    title: str = "unknown"
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class OptionalContext(ImportJsonMixin):
+    summary: Any = field(
+        default=SingleObjectDescriptor(
+            ContextSummaryDetails,
+            default_factory=ContextSummaryDetails,
+        )
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class Aggregate(ImportJsonMixin):
+    key: str
+    metrics: Any = field(default=SingleObjectDescriptor(MetricDetails))
+    summary: Any = field(default=SingleObjectDescriptor(SummaryDetails))
+    hierarchy: Any = field(default=SingleObjectDescriptor(HierarchyDetails))
+    context: Any = field(
+        default=SingleObjectDescriptor(
+            OptionalContext,
+            default_factory=lambda: None,
+        )
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasedAggregate(ImportJsonMixin):
+    key: str
+    metrics: Any = field(default=SingleObjectDescriptor(MetricDetails))
+    summary: Any = field(default=SingleObjectDescriptor(SummaryDetails))
+    hierarchy: Any = field(default=SingleObjectDescriptor(HierarchyDetails))
+    context: Any = field(
+        default=SingleObjectDescriptor(
+            OptionalContext,
+            default_factory=lambda: None,
+            alias="@context",
+        )
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def aggregate_payload() -> dict[str, Any]:
+    return {
+        "key": "example",
+        "ancestor_key": None,
+        "is_group": None,
+        "title": "Example title",
+        "note": "",
+        "elapsed": 0,
+        "total": 0,
+    }
+
+
+def test_explicit_optional_branch_is_excluded_from_flat_schema() -> None:
+    model = Aggregate(**aggregate_payload(), context=None)
+
+    assert model.summary.title == "Example title"
+    assert model.hierarchy.ancestor_key is None
+    assert model.metrics.total == 0
+    assert model.context is None
+
+
+def test_explicit_optional_alias_is_excluded_from_flat_schema() -> None:
+    model = AliasedAggregate(
+        **aggregate_payload(),
+        **{"@context": None},
+    )
+
+    assert model.summary.title == "Example title"
+    assert model.hierarchy.ancestor_key is None
+    assert model.metrics.elapsed == 0
+    assert model.context is None
+
+
+def test_implicit_conflicting_optional_branch_still_disables_flat_import() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="metrics"):
+        Aggregate(**aggregate_payload())
+
+
 def test_list_of_scalars_does_not_disable_flat_mapping() -> None:
     model = ScalarListPayloadRoot(tags=["one", "two"], a="10", b="20")
 
     assert model.tags == ["one", "two"]
+    assert model.nested.a == 10
+    assert model.nested.b == 20
+
+
+def test_list_of_date_leaves_does_not_disable_flat_mapping() -> None:
+    days = [date(2026, 9, 1), date(2026, 9, 30)]
+
+    model = ScalarListPayloadRoot(tags=days, a="10", b="20")
+
+    assert model.tags == days
     assert model.nested.a == 10
     assert model.nested.b == 20
 
@@ -657,6 +835,32 @@ def test_list_of_objects_disables_implicit_flat_mapping() -> None:
         b="20",
     )
 
+    assert model.nested is None
+
+
+def test_ready_submodel_disables_implicit_flat_mapping() -> None:
+    ready_model = MultiFieldNested(a="1", b="2")
+
+    model = StructuredPayloadRoot(
+        metadata=ready_model,
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata is ready_model
+    assert model.nested is None
+
+
+def test_list_of_ready_submodels_disables_implicit_flat_mapping() -> None:
+    ready_model = MultiFieldNested(a="1", b="2")
+
+    model = StructuredPayloadRoot(
+        metadata=[ready_model],
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata == [ready_model]
     assert model.nested is None
 
 

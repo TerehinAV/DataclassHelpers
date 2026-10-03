@@ -19,7 +19,7 @@ The library emphasizes type safety, flexible default values, and graceful error 
 
 ## `ImportJsonMixin` Input Resolution
 
-`ImportJsonMixin` accepts JSON-compatible keyword arguments, ignores unknown keys, resolves aliases, and validates required fields. Nested object fields can be populated explicitly or inferred from a flat payload.
+`ImportJsonMixin` accepts keyword arguments, ignores unknown keys, resolves aliases, and validates required fields. Nested object fields can be populated explicitly or inferred from a flat payload.
 
 ### Resolution order
 
@@ -27,25 +27,25 @@ Nested fields are resolved in this order:
 
 1. **Explicit field name or alias.** Its value is passed directly to the descriptor. This always takes precedence over flat fields.
 2. **Payload shape.** When no explicit nested value exists, the complete payload must be structurally flat before implicit mapping is considered.
-3. **Schema uniqueness.** Every field name and alias in the complete recursive dataclass hierarchy must have exactly one owner.
+3. **Schema uniqueness.** Every field name and alias in branches still eligible for implicit flat mapping must have exactly one owner. Descendants of explicitly supplied object fields are excluded.
 4. **Nested-model evidence.** At least one flat key must belong to the candidate nested model.
 5. **Validation or default.** Selected nested models are validated recursively; otherwise descriptor defaults apply.
 
 | Condition | Result |
 |---|---|
 | Field name or alias is present | Import that explicit nested value |
-| Any payload value is a dictionary or nested list | Disable all implicit flat mapping |
-| Payload values are JSON scalars or one-dimensional scalar lists | Payload shape is flat |
-| Any field name or alias is duplicated anywhere in the model hierarchy | Disable flat mapping for the entire model |
+| Any payload value is a mapping, nested list, ready submodel, or list containing mappings or ready submodels | Disable all implicit flat mapping |
+| Payload values are leaves not mapped by object descriptors, or one-dimensional lists of such leaves | Payload shape is flat |
+| A field name or alias is duplicated across active flat-mapping branches | Disable flat mapping for the remaining implicit branches |
 | The flat payload contains keys owned by an unambiguous nested model | Map the complete payload onto that nested model |
 | No flat key selects an optional nested model | Use its `default` or `default_factory` |
 | Selected flat data omits a required nested field | Raise `MissingRequiredFieldsError` |
 
-JSON dump strings are treated as ordinary scalar strings and are not parsed when payload shape is determined. Instances accepted directly by object descriptors may still be supplied through an explicit field key, but model instances are outside the flat JSON-input contract.
+Leaf values are not limited to JSON primitives: scalar descriptors may consume Python objects such as `date` or `datetime`, and one-dimensional lists of such leaves remain flat. A ready instance of any model class mapped by an object descriptor is hierarchical instead. Such instances may still be supplied through an explicit field key. JSON dump strings remain ordinary scalar strings and are not parsed during shape detection.
 
 ### Global schema ambiguity
 
-Field names and aliases are collected recursively from the root model and all nested dataclasses. A duplicate at any level disables flat mapping globally, even if the conflicting key is absent from the current payload. Explicit hierarchical input remains available for ambiguous schemas.
+Field names and aliases are collected recursively from the root model and nested dataclass branches that still require implicit resolution. When an object field is explicitly present by name or alias, its descendants are removed from the flat ownership graph because that branch has already selected hierarchical import. Duplicates remaining in the active graph disable flat mapping even if the conflicting key is absent from the payload.
 
 This conservative rule prevents a root field from pseudo-filling a nested model and prevents the same flat key from selecting multiple sibling branches.
 
@@ -57,7 +57,7 @@ Validation errors include masked input data. Secret-like keys such as `password`
 
 ### Aliases and unknown keys
 
-When both a field name and its alias are present, the alias value wins. Aliases also participate in the global uniqueness check. Keys matching neither a field name nor an alias are ignored.
+When both a field name and its alias are present, the alias value wins. Aliases also participate in the active-schema uniqueness check. Keys matching neither a field name nor an alias are ignored.
 
 ### Missing values: `None` and empty string
 

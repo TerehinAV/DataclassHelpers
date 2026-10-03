@@ -1,6 +1,6 @@
 # `ImportJsonMixin` Documentation
 
-`ImportJsonMixin` initializes dataclass models from JSON-compatible keyword arguments. It supports field aliases, ignores unknown keys, validates required values, and can populate nested dataclasses from either explicit hierarchical values or an unambiguous flat payload.
+`ImportJsonMixin` initializes dataclass models from keyword arguments. It supports field aliases, ignores unknown keys, validates required values, and can populate nested dataclasses from either explicit hierarchical values or an unambiguous flat payload.
 
 ## Model Definition
 
@@ -37,23 +37,17 @@ profile = Profile(
 
 When no explicit nested value is present, the mixin examines the complete payload without consulting descriptor implementations.
 
-Flat JSON values are:
+Flat values are arbitrary leaves that are not instances of model classes mapped by object descriptors. This includes JSON primitives as well as domain scalar values accepted by ordinary fields or scalar descriptors, such as `date` and `datetime`. One-dimensional lists containing only such leaves are also flat.
 
-- `null` / `None`;
-- booleans;
-- numbers;
-- strings;
-- one-dimensional lists containing only these scalar values.
+A mapping, nested list, ready mapped-model instance, or list containing mappings or ready mapped-model instances makes the payload hierarchical and disables all implicit flat mapping. Model classes are discovered through the common `ObjectFieldDescriptor` contract rather than concrete descriptor implementations.
 
-A dictionary or nested list makes the payload hierarchical and disables all implicit flat mapping. JSON dump strings are not parsed during this check and remain ordinary scalar strings.
-
-The flat-input contract contains only JSON-compatible values. Model instances may be accepted by an object descriptor through an explicit field key, but they are not part of flat JSON input.
+A ready model may still be supplied through an explicit object field or alias. JSON dump strings are not parsed during shape detection and remain ordinary scalar strings.
 
 ### 3. Global schema-uniqueness check
 
-The mixin recursively collects every dataclass field name and descriptor alias from the root model and all nested models. Flat mapping is allowed only when every accepted key has exactly one owner in the complete hierarchy.
+The mixin recursively collects every dataclass field name and descriptor alias from the root model and nested branches that remain eligible for implicit flat mapping. When an object field is explicitly supplied by field name or alias, its descendants are excluded from the ownership graph because that branch has already selected hierarchical import.
 
-Any duplicate field name or alias disables flat mapping for the entire model, even when the conflicting key is absent from the current payload. Explicit hierarchical input continues to work for such schemas.
+Flat mapping is allowed only when every accepted key in the remaining active graph has exactly one owner. Any duplicate field name or alias in that graph disables implicit flat mapping, even when the conflicting key is absent from the current payload. Explicit hierarchical input continues to work for ambiguous branches.
 
 ```python
 @dataclass
@@ -74,7 +68,10 @@ class Order(ImportJsonMixin):
 
 
 order = Order(name="order-1")
-# order.person is None: "name" has multiple owners in the hierarchy.
+# order.person is None: "name" has multiple owners in active branches.
+
+# Supplying person explicitly removes Person descendants from flat ownership.
+explicit_order = Order(name="order-1", person=None)
 ```
 
 ### 4. Nested-model selection

@@ -6,6 +6,7 @@ import pytest
 from descriptors import (
     DateTimeDescriptor,
     IntStringDescriptor,
+    JsonDumpObjectDescriptor,
     MapObjectDescriptor,
     ObjectListDescriptor,
     SingleObjectDescriptor,
@@ -25,37 +26,9 @@ class AliasModel(ImportJsonMixin):
 
 
 @dataclass
-class CalendarDayImport(ImportJsonMixin):
-    current_day: Any = field(default=DateTimeDescriptor())
-    caption: str = ""
-
-    def __init__(self, **kwargs: Any) -> None:
-        ImportJsonMixin.__init__(self, **kwargs)
-
-
-@dataclass
-class CalendarImport(ImportJsonMixin):
-    days: Any = field(default=ObjectListDescriptor(CalendarDayImport))
-    day_map: Any = field(default=MapObjectDescriptor(CalendarDayImport))
-
-    def __init__(self, **kwargs: Any) -> None:
-        ImportJsonMixin.__init__(self, **kwargs)
-
-
-@dataclass
 class RequiredModel(ImportJsonMixin):
     required_name: str
     optional_name: str = "ok"
-
-    def __init__(self, **kwargs: Any) -> None:
-        ImportJsonMixin.__init__(self, **kwargs)
-
-
-@dataclass
-class AliasObjectListModel(ImportJsonMixin):
-    values: Any = field(
-        default=ObjectListDescriptor(CalendarDayImport, alias="@values")
-    )
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
@@ -121,32 +94,6 @@ def test_alias_import_and_ignore_unexpected_keys() -> None:
     assert not hasattr(model, "ignored_field")
 
 
-def test_calendar_style_nested_object_list_and_map_import() -> None:
-    payload = {
-        "days": [
-            {"current_day": "2024-01-01T10:00:00", "caption": "first"},
-            {"current_day": "2024-01-02T10:00:00", "caption": "second"},
-        ],
-        "day_map": {
-            "a": {"current_day": "2024-01-03T10:00:00", "caption": "mapped"},
-        },
-    }
-
-    model = CalendarImport(**payload)
-
-    assert len(model.days) == 2
-    assert model.days[0].caption == "first"
-    assert model.days[1].current_day.day == 2
-    assert model.day_map["a"].caption == "mapped"
-
-
-def test_current_import_semantics_for_object_descriptor_alias_key_only() -> None:
-    with pytest.raises(MissingRequiredFieldsError) as exc_info:
-        AliasObjectListModel(**{"@values": [{"caption": "x"}]})
-
-    assert "current_day" in str(exc_info.value)
-
-
 def test_descriptor_backed_required_missing_field_raises_on_init() -> None:
     with pytest.raises(MissingRequiredFieldsError) as exc_info:
         DescriptorMissingSemanticsModel()
@@ -192,27 +139,160 @@ def test_single_object_descriptor_supports_flat_input_for_nested_models() -> Non
 
 
 @dataclass
-class FlatDefaultAddress(ImportJsonMixin):
-    street: Any = field(default=None)
-    city: Any = field(default=None)
+class DeepNestedModel(ImportJsonMixin):
+    val: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+@dataclass
+class MidModel(ImportJsonMixin):
+    deep: Any = field(default=SingleObjectDescriptor(DeepNestedModel))
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+@dataclass
+class TopModel(ImportJsonMixin):
+    mid: Any = field(default=SingleObjectDescriptor(MidModel))
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+def test_deep_flat_mapping() -> None:
+    # Verify recursive flat mapping through multiple nested models.
+    model = TopModel(val="42")
+    assert model.mid.deep.val == 42
+
+@dataclass
+class MultiFieldNested(ImportJsonMixin):
+    a: Any = field(default=IntStringDescriptor())
+    b: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+@dataclass
+class MultiNestedRoot(ImportJsonMixin):
+    nested: Any = field(default=SingleObjectDescriptor(MultiFieldNested))
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+def test_flat_mapping_partial_data_fails() -> None:
+    # Partial flat data cannot initialize a required nested model.
+    with pytest.raises(MissingRequiredFieldsError):
+        MultiNestedRoot(a="1")  # b is missing
+
+def test_flat_mapping_precedence() -> None:
+    # An explicit nested value takes precedence over flat fields.
+    data = {
+        "nested": {"a": "1", "b": "2"},
+        "a": "3",
+        "b": "4"
+    }
+    model = MultiNestedRoot(**data)
+    assert model.nested.a == 1
+    assert model.nested.b == 2
+
+@dataclass
+class OptionalNestedModel(ImportJsonMixin):
+    opt_nested: Any = field(
+        default=SingleObjectDescriptor(MultiFieldNested, default_factory=lambda: None)
+    )
+
+    def __init__(self, **kwargs):
+        ImportJsonMixin.__init__(self, **kwargs)
+
+def test_optional_nested_no_data() -> None:
+    # The descriptor factory is used when no nested data is present.
+    model = OptionalNestedModel()
+    assert model.opt_nested is None
+
+def test_optional_nested_flat_data() -> None:
+    # Complete flat data overrides the descriptor's default factory.
+    model = OptionalNestedModel(a="10", b="20")
+    assert model.opt_nested.a == 10
+    assert model.opt_nested.b == 20
+
+
+@dataclass
+class DuplicateNamePerson(ImportJsonMixin):
+    name: str = "person"
+    city: str = "unknown"
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
 
 
 @dataclass
-class FlatDefaultPerson(ImportJsonMixin):
-    name: Any = field(default=None)
+class DuplicateNameRoot(ImportJsonMixin):
+    name: str = "root"
+    person: Any = field(
+        default=SingleObjectDescriptor(DuplicateNamePerson, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_flat_import_does_not_reuse_ambiguous_root_key() -> None:
+    model = DuplicateNameRoot(name="order-1")
+
+    assert model.name == "order-1"
+    assert model.person is None
+
+
+def test_any_duplicate_field_name_disables_flat_import_for_model() -> None:
+    model = DuplicateNameRoot(city="Moscow")
+
+    assert model.person is None
+
+
+@dataclass
+class StructuredPayloadRoot(ImportJsonMixin):
+    metadata: Any = field(default_factory=dict)
+    nested: Any = field(
+        default=SingleObjectDescriptor(MultiFieldNested, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_nested_structure_disables_implicit_flat_mapping() -> None:
+    model = StructuredPayloadRoot(
+        metadata={"source": "api"},
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata == {"source": "api"}
+    assert model.nested is None
+
+
+@dataclass
+class CalendarDayImport(ImportJsonMixin):
+    current_day: Any = field(default=DateTimeDescriptor())
+    caption: str = ""
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
 
 
 @dataclass
-class NestedRootWithDefault(ImportJsonMixin):
-    root_name: str = "root"
-    address: Any = field(
-        default=SingleObjectDescriptor(FlatDefaultAddress, default=None)
+class CalendarImport(ImportJsonMixin):
+    days: Any = field(default=ObjectListDescriptor(CalendarDayImport))
+    day_map: Any = field(default=MapObjectDescriptor(CalendarDayImport))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasObjectListModel(ImportJsonMixin):
+    values: Any = field(
+        default=ObjectListDescriptor(CalendarDayImport, alias="@values")
     )
 
     def __init__(self, **kwargs: Any) -> None:
@@ -220,12 +300,30 @@ class NestedRootWithDefault(ImportJsonMixin):
 
 
 @dataclass
-class NestedRootWithFactory(ImportJsonMixin):
-    root_name: str = "root"
+class DefaultAddress(ImportJsonMixin):
+    street: Any = None
+    city: Any = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AddressWithDefaultRoot(ImportJsonMixin):
+    address: Any = field(
+        default=SingleObjectDescriptor(DefaultAddress, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AddressWithFactoryRoot(ImportJsonMixin):
     address: Any = field(
         default=SingleObjectDescriptor(
-            FlatDefaultAddress,
-            default_factory=lambda: FlatDefaultAddress(street="unknown"),
+            DefaultAddress,
+            default_factory=lambda: DefaultAddress(street="factory"),
         )
     )
 
@@ -234,75 +332,339 @@ class NestedRootWithFactory(ImportJsonMixin):
 
 
 @dataclass
-class PseudoFillRoot(ImportJsonMixin):
-    name: Any = field(default=None)
-    person: Any = field(
-        default=SingleObjectDescriptor(FlatDefaultPerson, default=None)
-    )
+class AddressWithoutDefaultRoot(ImportJsonMixin):
+    address: Any = field(default=SingleObjectDescriptor(DefaultAddress))
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
-
-
-@dataclass
-class NestedRootNoDefault(ImportJsonMixin):
-    address: Any = field(default=SingleObjectDescriptor(FlatDefaultAddress))
-
-    def __init__(self, **kwargs: Any) -> None:
-        ImportJsonMixin.__init__(self, **kwargs)
-
-
-def test_object_descriptor_default_none_wins_over_flat_input() -> None:
-    model = NestedRootWithDefault(street="Main", root_name="x")
-
-    assert model.root_name == "x"
-    assert model.address is None
-
-
-def test_object_descriptor_default_factory_used_when_key_absent() -> None:
-    model = NestedRootWithFactory()
-
-    assert model.address.street == "unknown"
-    assert model.address.city is None
-
-
-def test_object_descriptor_no_pseudo_fill_from_same_named_root_field() -> None:
-    model = PseudoFillRoot(name="order-1")
-
-    assert model.name == "order-1"
-    assert model.person is None
-
-
-def test_object_descriptor_nested_key_still_overrides_default() -> None:
-    model = NestedRootWithDefault(
-        address={"street": "Main", "city": "X"}, root_name="x"
-    )
-
-    assert model.address.street == "Main"
-    assert model.address.city == "X"
-
-
-def test_object_descriptor_without_default_still_maps_flat_input() -> None:
-    model = NestedRootNoDefault(street="Main", city="X")
-
-    assert model.address.street == "Main"
-    assert model.address.city == "X"
 
 
 @dataclass
 class PlainFactoryModel(ImportJsonMixin):
     name: str = "n"
-    tags: Any = field(default_factory=lambda: ["t"])
+    tags: Any = field(default_factory=lambda: ["tag"])
 
     def __init__(self, **kwargs: Any) -> None:
         ImportJsonMixin.__init__(self, **kwargs)
 
 
-def test_plain_default_factory_field_filled_when_key_absent() -> None:
+@dataclass
+class AllDefaultNested(ImportJsonMixin):
+    first: Any = field(default=IntStringDescriptor(default_factory=lambda: 10))
+    second: Any = field(default=IntStringDescriptor(default_factory=lambda: 20))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AllDefaultNestedRoot(ImportJsonMixin):
+    nested: Any = field(
+        default=SingleObjectDescriptor(AllDefaultNested, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class MixedNested(ImportJsonMixin):
+    required_value: Any = field(default=IntStringDescriptor())
+    optional_value: Any = field(
+        default=IntStringDescriptor(default_factory=lambda: 20)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class MixedNestedRoot(ImportJsonMixin):
+    nested: Any = field(default=SingleObjectDescriptor(MixedNested, default=None))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class LeftNested(ImportJsonMixin):
+    left_value: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class RightNested(ImportJsonMixin):
+    right_value: Any = field(default=IntStringDescriptor())
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class SiblingNestedRoot(ImportJsonMixin):
+    left: Any = field(default=SingleObjectDescriptor(LeftNested, default=None))
+    right: Any = field(default=SingleObjectDescriptor(RightNested, default=None))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasedNested(ImportJsonMixin):
+    amount: Any = field(default=IntStringDescriptor(alias="@amount"))
+    currency: str = "USD"
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasedNestedRoot(ImportJsonMixin):
+    nested: Any = field(default=SingleObjectDescriptor(AliasedNested, default=None))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class JsonNestedRoot(ImportJsonMixin):
+    nested: Any = field(default=JsonDumpObjectDescriptor(MultiFieldNested))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasCollisionRoot(ImportJsonMixin):
+    root_value: Any = field(default=IntStringDescriptor(alias="@amount"))
+    nested: Any = field(default=SingleObjectDescriptor(AliasedNested, default=None))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class ScalarListPayloadRoot(ImportJsonMixin):
+    tags: Any = field(default_factory=list)
+    nested: Any = field(
+        default=SingleObjectDescriptor(MultiFieldNested, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_object_list_and_map_support_hierarchical_import() -> None:
+    model = CalendarImport(
+        days=[
+            {"current_day": "2024-01-01T10:00:00", "caption": "first"},
+            {"current_day": "2024-01-02T10:00:00", "caption": "second"},
+        ],
+        day_map={
+            "a": {"current_day": "2024-01-03T10:00:00", "caption": "mapped"}
+        },
+    )
+
+    assert len(model.days) == 2
+    assert model.days[0].caption == "first"
+    assert model.days[1].current_day.day == 2
+    assert model.day_map["a"].caption == "mapped"
+
+
+def test_object_list_alias_preserves_nested_validation() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="current_day"):
+        AliasObjectListModel(**{"@values": [{"caption": "missing date"}]})
+
+
+def test_descriptor_default_is_used_without_submodel_data() -> None:
+    assert AddressWithDefaultRoot().address is None
+
+
+def test_unique_flat_data_overrides_descriptor_default() -> None:
+    model = AddressWithDefaultRoot(street="Main")
+
+    assert model.address.street == "Main"
+    assert model.address.city is None
+
+
+def test_descriptor_factory_is_used_without_submodel_data() -> None:
+    model = AddressWithFactoryRoot()
+
+    assert model.address.street == "factory"
+    assert model.address.city is None
+
+
+def test_unique_flat_data_overrides_descriptor_factory() -> None:
+    model = AddressWithFactoryRoot(city="Moscow")
+
+    assert model.address.street is None
+    assert model.address.city == "Moscow"
+
+
+def test_explicit_nested_value_overrides_default_and_flat_values() -> None:
+    model = AddressWithDefaultRoot(
+        address={"street": "Structured", "city": "X"},
+        street="Flat",
+        city="Y",
+    )
+
+    assert model.address.street == "Structured"
+    assert model.address.city == "X"
+
+
+def test_required_descriptor_maps_complete_unique_flat_data() -> None:
+    model = AddressWithoutDefaultRoot(street="Main", city="X")
+
+    assert model.address.street == "Main"
+    assert model.address.city == "X"
+
+
+def test_required_descriptor_without_flat_data_fails() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="address"):
+        AddressWithoutDefaultRoot(unrelated="value")
+
+
+def test_required_flat_submodel_rejects_partial_data() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="nested.b"):
+        MultiNestedRoot(a="1")
+
+
+def test_structured_submodel_rejects_partial_data() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="b"):
+        MultiNestedRoot(nested={"a": "1"})
+
+
+def test_optional_descriptor_rejects_partial_required_flat_data() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="opt_nested.b"):
+        OptionalNestedModel(a="1")
+
+
+def test_all_default_submodel_maps_partial_flat_data() -> None:
+    model = AllDefaultNestedRoot(first="7")
+
+    assert model.nested.first == 7
+    assert model.nested.second == 20
+
+
+def test_all_default_submodel_uses_descriptor_default_without_data() -> None:
+    assert AllDefaultNestedRoot().nested is None
+
+
+def test_mixed_submodel_maps_required_value_and_uses_field_default() -> None:
+    model = MixedNestedRoot(required_value="7")
+
+    assert model.nested.required_value == 7
+    assert model.nested.optional_value == 20
+
+
+def test_mixed_submodel_rejects_only_optional_flat_data() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="nested.required_value"):
+        MixedNestedRoot(optional_value="7")
+
+
+def test_sibling_submodels_map_their_unique_flat_keys() -> None:
+    model = SiblingNestedRoot(left_value="1", right_value="2")
+
+    assert model.left.left_value == 1
+    assert model.right.right_value == 2
+
+
+def test_sibling_without_its_flat_keys_keeps_default() -> None:
+    model = SiblingNestedRoot(left_value="1")
+
+    assert model.left.left_value == 1
+    assert model.right is None
+
+
+def test_nested_alias_participates_in_flat_mapping() -> None:
+    model = AliasedNestedRoot(**{"@amount": "12"})
+
+    assert model.nested.amount == 12
+
+
+def test_json_object_descriptor_supports_unique_flat_mapping() -> None:
+    model = JsonNestedRoot(a="10", b="20")
+
+    assert model.nested.a == 10
+    assert model.nested.b == 20
+
+
+def test_json_object_descriptor_supports_explicit_json_input() -> None:
+    model = JsonNestedRoot(nested='{"a": "10", "b": "20"}')
+
+    assert model.nested.a == 10
+    assert model.nested.b == 20
+
+
+def test_single_object_descriptor_accepts_explicit_model_instance() -> None:
+    nested = MultiFieldNested(a="10", b="20")
+    model = MultiNestedRoot(nested=nested)
+
+    assert model.nested is nested
+
+
+def test_ambiguous_alias_does_not_trigger_nested_flat_mapping() -> None:
+    model = AliasCollisionRoot(**{"@amount": "12"})
+
+    assert model.root_value == 12
+    assert model.nested is None
+
+
+def test_any_duplicate_alias_disables_flat_import_for_model() -> None:
+    model = AliasCollisionRoot(root_value="1", currency="EUR")
+
+    assert model.root_value == 1
+    assert model.nested is None
+
+
+def test_list_of_scalars_does_not_disable_flat_mapping() -> None:
+    model = ScalarListPayloadRoot(tags=["one", "two"], a="10", b="20")
+
+    assert model.tags == ["one", "two"]
+    assert model.nested.a == 10
+    assert model.nested.b == 20
+
+
+def test_json_dump_string_remains_scalar_for_flat_detection() -> None:
+    model = StructuredPayloadRoot(
+        metadata='{"source": "api"}',
+        a="10",
+        b="20",
+    )
+
+    assert model.metadata == '{"source": "api"}'
+    assert model.nested.a == 10
+    assert model.nested.b == 20
+
+
+def test_nested_scalar_list_disables_implicit_flat_mapping() -> None:
+    model = ScalarListPayloadRoot(
+        tags=[["nested"]],
+        a="10",
+        b="20",
+    )
+
+    assert model.tags == [["nested"]]
+    assert model.nested is None
+
+
+def test_list_of_objects_disables_implicit_flat_mapping() -> None:
+    model = StructuredPayloadRoot(
+        metadata=[{"source": "api"}],
+        a="10",
+        b="20",
+    )
+
+    assert model.nested is None
+
+
+def test_plain_default_factory_field_is_filled_when_key_is_absent() -> None:
     model = PlainFactoryModel(name="x")
 
     assert model.name == "x"
-    assert model.tags == ["t"]
+    assert model.tags == ["tag"]
 
 
 def test_has_required_fields_detects_required_fields() -> None:
@@ -322,6 +684,7 @@ def test_mask_secrets_masks_matching_keys_recursively() -> None:
     }
 
     masked = ImportJsonMixin.mask_secrets(data)
+    assert isinstance(masked, dict)
 
     assert masked["password"] == "********"
     assert masked["visible"] == "keep"
@@ -336,7 +699,8 @@ def test_mask_secrets_masks_matching_keys_recursively() -> None:
 
 def test_mask_secrets_accepts_custom_secret_keys() -> None:
     masked = ImportJsonMixin.mask_secrets(
-        {"custom": "v", "password": "keep"}, secret_keys=["custom"]
+        {"custom": "value", "password": "keep"},
+        secret_keys=["custom"],
     )
 
     assert masked == {"custom": "********", "password": "keep"}

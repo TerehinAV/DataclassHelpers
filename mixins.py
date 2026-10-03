@@ -6,10 +6,10 @@ keys and ``ExportJsonMixin`` / ``FlatExportJsonMixin`` for recursive
 export into a JSON-compatible structure.
 """
 
-from typing import Dict, Any, Optional
 from dataclasses import dataclass, fields, MISSING, is_dataclass
+from typing import Dict, Any, Optional, List, Set, Tuple
 
-from descriptors import ObjectFieldDescriptor, FieldDescriptor
+from descriptors import FieldDescriptor, ObjectFieldDescriptor
 
 
 class MissingRequiredFieldsError(Exception):
@@ -23,73 +23,75 @@ class ImportJsonMixin:
     even if they are not expected in the current dataclass.
     Only the fields defined in the dataclass will be used.
 
-    For a nested-model field (an ObjectFieldDescriptor) whose key is absent
-    in the input data:
-        - an explicitly declared default/default_factory wins — the input
-          is NOT fed into the nested model;
-        - with no default declared, the input is treated as a flat JSON
-          object and mapped onto the nested model.
+    A nested-model field is imported from its explicit key or alias first.
+    Implicit flat mapping requires both a flat JSON value structure and
+    globally unique field names and aliases across the complete model
+    hierarchy. Any schema duplicate disables flat mapping for the whole model.
+    JSON dump strings remain scalar and are not inspected during shape checks.
     """
 
     def __init__(self, **kwargs):
         self.validate_required_fields(kwargs)
-        sf_fields = {sf_field.name: sf_field for sf_field in fields(self)}
-        for name, sf_field in sf_fields.items():
-            descriptor = (
-                sf_field.default
-                if isinstance(
-                    sf_field.default, (ObjectFieldDescriptor, FieldDescriptor)
-                )
-                else None
-            )
-            input_key = name
-            descriptor_alias = (
-                getattr(descriptor, "alias", None) if descriptor is not None else None
-            )
+        for sf_field in fields(self):
+            descriptor = self._field_descriptor(sf_field)
+            input_key = sf_field.name
+            descriptor_alias = getattr(descriptor, "alias", None)
             if descriptor_alias and descriptor_alias in kwargs:
                 input_key = descriptor_alias
 
-            is_model = isinstance(sf_field.default, ObjectFieldDescriptor)
             has_value = input_key in kwargs
-            if is_model:
+            if isinstance(descriptor, ObjectFieldDescriptor):
                 if has_value:
-                    # the key is present → pass only its value to the descriptor
-                    setattr(self, name, kwargs[input_key])
-                elif not self._is_descriptor_required(descriptor):
-                    # the key is absent, but the descriptor declares an explicit
-                    # default/default_factory → let the descriptor produce it;
-                    # feeding the whole input here would silently override the
-                    # default and could pseudo-fill the nested model from
-                    # unrelated same-named root keys
-                    descriptor_default = getattr(descriptor, "default", MISSING)
-                    descriptor_factory = getattr(descriptor, "default_factory", MISSING)
-                    value = (descriptor_default if descriptor_default is not MISSING
-                             else descriptor_factory() if descriptor_factory is not MISSING else MISSING)
-                    if value is not MISSING:
-                        setattr(self, name, value)
+                    setattr(self, sf_field.name, kwargs[input_key])
                     continue
-                else:
-                    # the key is absent and no default is declared → treat the
-                    # input as a flat JSON object and map it onto the nested model
-                    setattr(self, name, kwargs)
+
+                has_flat_input = self._model_has_unambiguous_flat_input(
+                    getattr(descriptor, "object_class", None), kwargs
+                )
+                if has_flat_input:
+                    setattr(self, sf_field.name, kwargs)
+                    continue
+
+                if not self._is_descriptor_required(descriptor):
+                    descriptor_default = getattr(descriptor, "default", MISSING)
+                    descriptor_factory = getattr(
+                        descriptor, "default_factory", MISSING
+                    )
+                    value = descriptor_default
+                    if value is MISSING and descriptor_factory is not MISSING:
+                        value = descriptor_factory()
+                    if value is not MISSING:
+                        setattr(self, sf_field.name, value)
                 continue
 
             if has_value:
-                setattr(self, name, kwargs[input_key])
+                setattr(self, sf_field.name, kwargs[input_key])
                 continue
 
             if descriptor is not None:
                 continue
 
             if sf_field.default_factory is not MISSING:
-                setattr(self, name, sf_field.default_factory())
+                setattr(self, sf_field.name, sf_field.default_factory())
                 continue
 
             if sf_field.default is not MISSING:
-                setattr(self, name, sf_field.default)
+                setattr(self, sf_field.name, sf_field.default)
 
     @staticmethod
     def _is_descriptor_required(descriptor: Any) -> bool:
+        """Return whether a descriptor requires an explicit value.
+
+        A descriptor is required when it has neither a default nor a usable
+        default factory. Factories that deliberately raise for missing values
+        also make the descriptor required.
+
+        Args:
+            descriptor: Descriptor instance to inspect.
+
+        Returns:
+            True when the descriptor requires an explicit value.
+        """
         descriptor_default = getattr(descriptor, "default", MISSING)
         descriptor_factory = getattr(descriptor, "default_factory", MISSING)
         if descriptor_default is MISSING and descriptor_factory is MISSING:
@@ -103,17 +105,28 @@ class ImportJsonMixin:
         return False
 
     @classmethod
-    def _object_descriptor_can_be_built_from_flat_input(
-        cls, descriptor: Any, input_data: Dict[str, Any]
-    ) -> bool:
+    def _get_missing_fields_recursive(
+            cls, descriptor: Any, input_data: Dict[str, Any], prefix: str = ""
+    ) -> List[str]:
+        """Find missing required fields in a nested object hierarchy.
+
+        Args:
+            descriptor: Object descriptor containing the nested model metadata.
+            input_data: Flat input data being mapped onto the hierarchy.
+            prefix: Field path prefix used in validation errors.
+
+        Returns:
+            Paths of all required fields missing from the flat input.
+        """
         object_class = getattr(descriptor, "object_class", None)
         if object_class is None or not hasattr(object_class, "__dataclass_fields__"):
-            return False
+            return []
 
+        missing = []
         try:
             nested_fields = fields(object_class)
         except TypeError:
-            return False
+            return []
 
         for nested_field in nested_fields:
             nested_descriptor = (
@@ -129,68 +142,218 @@ class ImportJsonMixin:
                 if nested_descriptor is not None
                 else None
             )
-            nested_has_value = nested_field.name in input_data or (
+
+            has_value = nested_field.name in input_data or (
                 nested_alias in input_data if nested_alias else False
             )
 
-            if nested_descriptor is not None and isinstance(
-                nested_descriptor, ObjectFieldDescriptor
-            ):
-                if nested_has_value:
-                    return True
-                if cls._object_descriptor_can_be_built_from_flat_input(
-                    nested_descriptor, input_data
-                ):
-                    return True
+            field_path = f"{prefix}.{nested_field.name}" if prefix else nested_field.name
+
+            # A directly supplied value satisfies this field.
+            if has_value:
                 continue
 
-            if nested_has_value:
-                return True
+            # For a missing value, determine whether the field is required.
+            is_required = False
+            if nested_descriptor is not None:
+                is_required = cls._is_descriptor_required(nested_descriptor)
+            else:
+                has_default = nested_field.default is not MISSING
+                has_factory = nested_field.default_factory is not MISSING
+                is_required = not has_default and not has_factory
 
-        return False
+            if not is_required:
+                continue
+
+            # A required nested object may still be populated from flat input.
+            if isinstance(nested_descriptor, ObjectFieldDescriptor):
+                if cls._model_has_unambiguous_flat_input(
+                        getattr(nested_descriptor, "object_class", None), input_data
+                ):
+                    # Validate the selected nested hierarchy recursively.
+                    missing.extend(
+                        cls._get_missing_fields_recursive(
+                            nested_descriptor, input_data, field_path
+                        )
+                    )
+                else:
+                    # No flat data selects this required nested object.
+                    missing.append(field_path)
+            else:
+                # A regular required field is missing.
+                missing.append(field_path)
+
+        return missing
+
+    @staticmethod
+    def _field_descriptor(field_obj: Any) -> Optional[Any]:
+        descriptor = field_obj.default
+        if isinstance(descriptor, (ObjectFieldDescriptor, FieldDescriptor)):
+            return descriptor
+        return None
+
+    @classmethod
+    def _accepted_flat_keys(
+            cls, model_class: Any, ancestors: Tuple[Any, ...] = ()
+    ) -> Set[str]:
+        """Collect field names and aliases accepted by a model hierarchy."""
+        if model_class in ancestors:
+            return set()
+
+        try:
+            model_fields = fields(model_class)
+        except TypeError:
+            return set()
+
+        accepted_keys: Set[str] = set()
+        next_ancestors = ancestors + (model_class,)
+        for field_obj in model_fields:
+            descriptor = cls._field_descriptor(field_obj)
+            accepted_keys.add(field_obj.name)
+            alias = getattr(descriptor, "alias", None)
+            if alias:
+                accepted_keys.add(alias)
+            if isinstance(descriptor, ObjectFieldDescriptor):
+                accepted_keys.update(
+                    cls._accepted_flat_keys(
+                        getattr(descriptor, "object_class", None), next_ancestors
+                    )
+                )
+        return accepted_keys
+
+    @classmethod
+    def _flat_key_owners(cls) -> Dict[str, Set[Tuple[str, ...]]]:
+        """Map every accepted key to all field paths that can consume it."""
+        owners: Dict[str, Set[Tuple[str, ...]]] = {}
+
+        def collect(
+                model_class: Any,
+                path: Tuple[str, ...],
+                ancestors: Tuple[Any, ...],
+        ) -> None:
+            if model_class in ancestors:
+                return
+
+            try:
+                model_fields = fields(model_class)
+            except TypeError:
+                return
+
+            next_ancestors = ancestors + (model_class,)
+            for field_obj in model_fields:
+                descriptor = cls._field_descriptor(field_obj)
+                field_path = path + (field_obj.name,)
+                accepted_keys = {field_obj.name}
+                alias = getattr(descriptor, "alias", None)
+                if alias:
+                    accepted_keys.add(alias)
+                for key in accepted_keys:
+                    owners.setdefault(key, set()).add(field_path)
+                if isinstance(descriptor, ObjectFieldDescriptor):
+                    collect(
+                        getattr(descriptor, "object_class", None),
+                        field_path,
+                        next_ancestors,
+                    )
+
+        collect(cls, (), ())
+        return owners
+
+    @classmethod
+    def _flat_schema_is_unambiguous(cls) -> bool:
+        """Return whether every accepted flat key has one schema owner.
+
+        Field names and aliases are checked across the complete recursive
+        dataclass hierarchy. Any duplicate disables flat import for the whole
+        target model, even when the conflicting key is absent from the input.
+        """
+        return all(
+            len(field_paths) == 1
+            for field_paths in cls._flat_key_owners().values()
+        )
+
+    @staticmethod
+    def _input_is_flat(input_data: Dict[str, Any]) -> bool:
+        """Return whether JSON-compatible input has a flat value structure.
+
+        JSON scalars and one-dimensional lists of JSON scalars are flat.
+        Dictionaries and nested lists indicate hierarchical input. JSON dump
+        strings are deliberately treated as ordinary scalar strings.
+        """
+        scalar_types = (str, int, float, bool, type(None))
+
+        def is_flat_value(value: Any) -> bool:
+            if isinstance(value, scalar_types):
+                return True
+            if isinstance(value, list):
+                return all(isinstance(item, scalar_types) for item in value)
+            return False
+
+        return all(is_flat_value(value) for value in input_data.values())
+
+    @classmethod
+    def _model_has_unambiguous_flat_input(
+            cls, model_class: Any, input_data: Dict[str, Any]
+    ) -> bool:
+        """Return whether flat input unambiguously targets a nested model.
+
+        Input shape is evaluated only from JSON values. Model suitability is
+        evaluated independently: every field name and alias in the complete
+        target hierarchy must be globally unique, and at least one input key
+        must belong to the requested nested model.
+        """
+        if model_class is None or not cls._input_is_flat(input_data):
+            return False
+        if not cls._flat_schema_is_unambiguous():
+            return False
+
+        accepted_keys = cls._accepted_flat_keys(model_class)
+        return any(key in input_data for key in accepted_keys)
 
     def validate_required_fields(self, input_data: Dict[str, Any]):
-        """
-        Validates that all required fields are present in the input data.
-        Raises an exception if any required field is missing.
+        """Validate direct and recursively selected flat input fields.
+
+        Optional nested descriptors are validated when unambiguous flat keys
+        select their model. Required nested descriptors may be satisfied by
+        the same flat mapping; otherwise their own field name is reported.
         """
         missing_fields = []
         for field_obj in fields(self):
-            descriptor = (
-                field_obj.default
-                if isinstance(
-                    field_obj.default, (ObjectFieldDescriptor, FieldDescriptor)
-                )
-                else None
+            descriptor = self._field_descriptor(field_obj)
+            descriptor_alias = getattr(descriptor, "alias", None)
+            has_value = field_obj.name in input_data or (
+                descriptor_alias in input_data if descriptor_alias else False
             )
+            if has_value:
+                continue
 
             if descriptor is not None:
                 is_required = self._is_descriptor_required(descriptor)
-                if is_required:
-                    descriptor_alias = getattr(descriptor, "alias", None)
-                    has_value = field_obj.name in input_data or (
-                        descriptor_alias in input_data if descriptor_alias else False
-                    )
-                    if (
-                        not has_value
-                        and isinstance(descriptor, ObjectFieldDescriptor)
-                        and self._object_descriptor_can_be_built_from_flat_input(
-                            descriptor, input_data
-                        )
-                    ):
-                        has_value = True
-                    if not has_value:
-                        missing_fields.append(field_obj.name)
-                continue
+            else:
+                has_default = field_obj.default is not MISSING
+                has_factory = field_obj.default_factory is not MISSING
+                is_required = not has_default and not has_factory
 
-            has_default = field_obj.default is not MISSING
-            has_factory = field_obj.default_factory is not MISSING
-            if not has_default and not has_factory and field_obj.name not in input_data:
+            if isinstance(descriptor, ObjectFieldDescriptor):
+                has_flat_input = self._model_has_unambiguous_flat_input(
+                    getattr(descriptor, "object_class", None), input_data
+                )
+                if has_flat_input:
+                    missing_fields.extend(
+                        self._get_missing_fields_recursive(
+                            descriptor, input_data, field_obj.name
+                        )
+                    )
+                    continue
+
+            if is_required:
                 missing_fields.append(field_obj.name)
+
         if missing_fields:
             raise MissingRequiredFieldsError(
-                f"Model {self.__class__.__name__} missing required fields with no default values: " +
-                f"{', '.join(missing_fields)}\ninput_data: {self.mask_secrets(input_data)}"
+                f"Model {self.__class__.__name__} missing required fields "
+                f"with no default values: {', '.join(missing_fields)}\n"
+                f"input_data: {self.mask_secrets(input_data)}"
             )
 
     @staticmethod

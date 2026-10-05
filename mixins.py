@@ -25,10 +25,15 @@ class ImportJsonMixin:
     Only the fields defined in the dataclass will be used.
 
     A nested-model field is imported from its explicit key or alias first.
-    Implicit flat mapping requires both a flat leaf-value structure and
-    unique field names and aliases across branches still eligible for implicit
-    mapping. Duplicates in that active schema disable flat mapping.
-    JSON dump strings remain scalar and are not inspected during shape checks.
+    Hybrid payloads are supported: a value under an explicitly supplied
+    object field key is exempt from shape detection, so an explicit dict,
+    ready model, object list, or object map can coexist with flat sibling
+    values that other active branches consume implicitly. Every remaining
+    hierarchical value still disables implicit flat mapping, which
+    additionally requires unique field names and aliases across branches
+    still eligible for implicit mapping. Duplicates in that active schema
+    disable flat mapping. JSON dump strings remain scalar and are not
+    inspected during shape checks.
     """
 
     def __init__(self, **kwargs):
@@ -50,7 +55,13 @@ class ImportJsonMixin:
                     getattr(descriptor, "object_class", None), kwargs
                 )
                 if has_flat_input:
-                    setattr(self, sf_field.name, kwargs)
+                    # Forward only data the child can still resolve itself:
+                    # explicit object keys of this level stay behind.
+                    setattr(
+                        self,
+                        sf_field.name,
+                        self._residual_payload_for_implicit_child(kwargs),
+                    )
                     continue
 
                 if not self._is_descriptor_required(descriptor):
@@ -223,17 +234,22 @@ class ImportJsonMixin:
         return accepted_keys
 
     @classmethod
-    def _flat_key_owners(
+    def _active_flat_schema(
         cls, input_data: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Set[Tuple[str, ...]]]:
-        """Map accepted flat keys to field paths that can consume them.
+    ) -> Tuple[Dict[str, Set[Tuple[str, ...]]], Set[str]]:
+        """Collect active flat-key ownership and explicit object keys.
 
-        An object branch supplied explicitly by field name or alias is already
-        resolved hierarchically, so its descendants cannot compete for flat
-        keys elsewhere in the payload. The explicit field itself remains in
-        the ownership map.
+        One pruned traversal walks the dataclass branches that still compete
+        for implicit flat mapping. Each field records its name and alias as
+        accepted keys owned by its field path. An ``ObjectFieldDescriptor``
+        field whose name or alias is present in ``input_data`` has already
+        selected hierarchical import: every present accepted key is reported
+        as excluded from shape detection and its object class is not
+        traversed. Otherwise the object class is traversed under the existing
+        ancestor guard.
         """
         owners: Dict[str, Set[Tuple[str, ...]]] = {}
+        excluded_keys: Set[str] = set()
 
         def collect(
             model_class: Any,
@@ -259,35 +275,46 @@ class ImportJsonMixin:
                 for key in accepted_keys:
                     owners.setdefault(key, set()).add(field_path)
 
-                is_explicit = input_data is not None and (
-                    field_obj.name in input_data
-                    or (alias in input_data if alias else False)
-                )
-                if isinstance(descriptor, ObjectFieldDescriptor) and not is_explicit:
+                if not isinstance(descriptor, ObjectFieldDescriptor):
+                    continue
+
+                if input_data is None:
                     collect(
                         getattr(descriptor, "object_class", None),
                         field_path,
                         next_ancestors,
                     )
+                    continue
+
+                present_keys = {
+                    key for key in accepted_keys if key in input_data
+                }
+                if present_keys:
+                    excluded_keys.update(present_keys)
+                    continue
+
+                collect(
+                    getattr(descriptor, "object_class", None),
+                    field_path,
+                    next_ancestors,
+                )
 
         collect(cls, (), ())
-        return owners
+        return owners, excluded_keys
 
     @classmethod
-    def _flat_schema_is_unambiguous(
-        cls, input_data: Dict[str, Any]
-    ) -> bool:
-        """Return whether each active flat key has one schema owner.
+    def _flat_key_owners(
+        cls, input_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Set[Tuple[str, ...]]]:
+        """Map accepted flat keys to field paths that can consume them.
 
-        Field names and aliases are checked across recursive dataclass branches
-        that remain eligible for implicit flat mapping. Explicit object branches
-        are excluded because their values have already selected hierarchical
-        import.
+        Compatibility view over :meth:`_active_flat_schema`. An object branch
+        supplied explicitly by field name or alias is already resolved
+        hierarchically, so its descendants cannot compete for flat keys
+        elsewhere in the payload. The explicit field itself remains in the
+        ownership map.
         """
-        return all(
-            len(field_paths) == 1
-            for field_paths in cls._flat_key_owners(input_data).values()
-        )
+        return cls._active_flat_schema(input_data)[0]
 
     @classmethod
     def _mapped_object_classes(cls) -> Tuple[type, ...]:
@@ -325,14 +352,23 @@ class ImportJsonMixin:
         return tuple(object_classes)
 
     @classmethod
-    def _input_is_flat(cls, input_data: Dict[str, Any]) -> bool:
+    def _input_is_flat(
+        cls,
+        input_data: Dict[str, Any],
+        excluded_keys: Optional[Set[str]] = None,
+    ) -> bool:
         """Return whether input values can participate in flat mapping.
 
-        Arbitrary leaf values are allowed so scalar descriptors can consume
-        domain types such as dates. Mappings, nested lists, and ready model
-        instances accepted by object descriptors indicate hierarchical input.
-        JSON dump strings remain ordinary scalar strings at this stage.
+        Values under keys of explicitly supplied object branches are exempt
+        from shape detection: those branches already selected hierarchical
+        import, so only their field name or alias is inspected. Every other
+        Mapping, nested list, ready model instance accepted by object
+        descriptors, or list containing them still indicates hierarchical
+        input. Arbitrary leaf values are allowed so scalar descriptors can
+        consume domain types such as dates. JSON dump strings remain ordinary
+        scalar strings at this stage.
         """
+        skip_keys = excluded_keys if excluded_keys is not None else set()
         mapped_object_classes = cls._mapped_object_classes()
 
         def is_mapped_object(value: Any) -> bool:
@@ -351,7 +387,11 @@ class ImportJsonMixin:
                 )
             return True
 
-        return all(is_flat_value(value) for value in input_data.values())
+        return all(
+            is_flat_value(value)
+            for key, value in input_data.items()
+            if key not in skip_keys
+        )
 
     @classmethod
     def _model_has_unambiguous_flat_input(
@@ -360,17 +400,52 @@ class ImportJsonMixin:
         """Return whether flat input unambiguously targets a nested model.
 
         Input shape is evaluated from leaf values independently of descriptor
-        conversion. Model suitability requires unique field names and aliases
-        across branches still eligible for implicit mapping, plus at least one
-        input key owned by the requested nested model.
+        conversion. Explicitly supplied object branches are exempt from shape
+        detection while every remaining hierarchical value still blocks flat
+        mapping. Model suitability requires unique field names and aliases
+        across the whole active schema, plus at least one input key owned by
+        the requested nested model.
         """
-        if model_class is None or not cls._input_is_flat(input_data):
+        if model_class is None:
             return False
-        if not cls._flat_schema_is_unambiguous(input_data):
+
+        owners, excluded_keys = cls._active_flat_schema(input_data)
+        if not cls._input_is_flat(input_data, excluded_keys):
+            return False
+        if any(len(field_paths) != 1 for field_paths in owners.values()):
             return False
 
         accepted_keys = cls._accepted_flat_keys(model_class)
         return any(key in input_data for key in accepted_keys)
+
+
+    @classmethod
+    def _residual_payload_for_implicit_child(
+            cls, input_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Return the payload forwarded to an implicitly selected child.
+
+        Present keys of the current level's explicitly supplied object fields
+        are removed: they already selected hierarchical import here and would
+        look like unknown hierarchical values inside the child, blocking its
+        own flat resolution. Only direct object keys are stripped; deeper
+        explicit keys are kept because every level derives its own exclusions.
+        """
+        explicit_keys: Set[str] = set()
+        for field_obj in fields(cls):
+            descriptor = cls._field_descriptor(field_obj)
+            if not isinstance(descriptor, ObjectFieldDescriptor):
+                continue
+            for key in (field_obj.name, getattr(descriptor, "alias", None)):
+                if key is not None and key in input_data:
+                    explicit_keys.add(key)
+        if not explicit_keys:
+            return input_data
+        return {
+            key: value
+            for key, value in input_data.items()
+            if key not in explicit_keys
+        }
 
     def validate_required_fields(self, input_data: Dict[str, Any]):
         """Validate direct and recursively selected flat input fields.

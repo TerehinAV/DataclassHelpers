@@ -19,35 +19,35 @@ The library emphasizes type safety, flexible default values, and graceful error 
 
 ## `ImportJsonMixin` Input Resolution
 
-`ImportJsonMixin` accepts keyword arguments, ignores unknown keys, resolves aliases, and validates required fields. Nested object fields can be populated explicitly or inferred from a flat payload.
+`ImportJsonMixin` accepts keyword arguments, ignores unknown keys, resolves aliases, and validates required fields. Nested object fields can be populated explicitly, inferred from a flat payload, or mixed: an explicitly supplied object branch is exempt from flat-shape detection, so a hierarchical dict, ready model, object list, or object map can coexist with flat sibling values consumed by the remaining active branches.
 
 ### Resolution order
 
 Nested fields are resolved in this order:
 
-1. **Explicit field name or alias.** Its value is passed directly to the descriptor. This always takes precedence over flat fields.
-2. **Payload shape.** When no explicit nested value exists, the complete payload must be structurally flat before implicit mapping is considered.
+1. **Explicit field name or alias.** Its value is passed directly to the descriptor. This always takes precedence over flat fields, and the value is exempt from shape detection because that branch has already selected hierarchical import.
+2. **Payload shape.** When no explicit nested value exists, every payload value outside the explicit object branches must be structurally flat before implicit mapping is considered.
 3. **Schema uniqueness.** Every field name and alias in branches still eligible for implicit flat mapping must have exactly one owner. Descendants of explicitly supplied object fields are excluded.
 4. **Nested-model evidence.** At least one flat key must belong to the candidate nested model.
 5. **Validation or default.** Selected nested models are validated recursively; otherwise descriptor defaults apply.
 
 | Condition | Result |
 |---|---|
-| Field name or alias is present | Import that explicit nested value |
-| Any payload value is a mapping, nested list, ready submodel, or list containing mappings or ready submodels | Disable all implicit flat mapping |
+| Object field name or alias is present | Import that explicit nested value; its key is exempt from shape detection |
+| Any payload value outside an explicit object branch is a mapping, nested list, ready submodel, or list containing mappings or ready submodels | Disable all implicit flat mapping |
 | Payload values are leaves not mapped by object descriptors, or one-dimensional lists of such leaves | Payload shape is flat |
 | A field name or alias is duplicated across active flat-mapping branches | Disable flat mapping for the remaining implicit branches |
-| The flat payload contains keys owned by an unambiguous nested model | Map the complete payload onto that nested model |
+| The flat payload contains keys owned by an unambiguous nested model | Map the remaining flat payload, without the current level's explicit object keys, onto that nested model |
 | No flat key selects an optional nested model | Use its `default` or `default_factory` |
 | Selected flat data omits a required nested field | Raise `MissingRequiredFieldsError` |
 
-Leaf values are not limited to JSON primitives: scalar descriptors may consume Python objects such as `date` or `datetime`, and one-dimensional lists of such leaves remain flat. A ready instance of any model class mapped by an object descriptor is hierarchical instead. Such instances may still be supplied through an explicit field key. JSON dump strings remain ordinary scalar strings and are not parsed during shape detection.
+Leaf values are not limited to JSON primitives: scalar descriptors may consume Python objects such as `date` or `datetime`, and one-dimensional lists of such leaves remain flat. A ready instance of any model class mapped by an object descriptor is hierarchical instead. Such instances remain importable through an explicit object field key, where they are skipped by shape detection. JSON dump strings remain ordinary scalar strings and are not parsed during shape detection.
 
 ### Global schema ambiguity
 
 Field names and aliases are collected recursively from the root model and nested dataclass branches that still require implicit resolution. When an object field is explicitly present by name or alias, its descendants are removed from the flat ownership graph because that branch has already selected hierarchical import. Duplicates remaining in the active graph disable flat mapping even if the conflicting key is absent from the payload.
 
-This conservative rule prevents a root field from pseudo-filling a nested model and prevents the same flat key from selecting multiple sibling branches.
+This conservative rule prevents a root field from pseudo-filling a nested model and prevents the same flat key from selecting multiple sibling branches. The exemption is scoped to active schema branches only: a mapping under any other key — including a stray key owned by a pruned subtree — still marks the payload hierarchical and blocks implicit flat mapping.
 
 ### Defaults and required fields
 

@@ -166,6 +166,14 @@ def test_deep_flat_mapping() -> None:
     model = TopModel(val="42")
     assert model.mid.deep.val == 42
 
+
+def test_deep_explicit_object_key_selects_parent_branch_for_flat_mapping() -> None:
+    # "deep" is an explicit object key of the active mid branch, so its dict
+    # value is exempt from shape detection and selects that parent branch.
+    model = TopModel(deep={"val": "7"})
+
+    assert model.mid.deep.val == 7
+
 @dataclass
 class MultiFieldNested(ImportJsonMixin):
     a: Any = field(default=IntStringDescriptor())
@@ -761,6 +769,110 @@ def aggregate_payload() -> dict[str, Any]:
     }
 
 
+@dataclass
+class ObjectListPlusFlatRoot(ImportJsonMixin):
+    entries: Any = field(default=ObjectListDescriptor(CalendarDayImport))
+    details: Any = field(
+        default=SingleObjectDescriptor(HierarchyDetails, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class ObjectMapPlusFlatRoot(ImportJsonMixin):
+    entry_map: Any = field(default=MapObjectDescriptor(CalendarDayImport))
+    details: Any = field(
+        default=SingleObjectDescriptor(HierarchyDetails, default=None)
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class HybridSideDetails(ImportJsonMixin):
+    title: str
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class HybridDeepTop(ImportJsonMixin):
+    mid: Any = field(default=SingleObjectDescriptor(MidModel))
+    side: Any = field(default=SingleObjectDescriptor(HybridSideDetails))
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+@dataclass
+class AliasedHybridDeepTop(ImportJsonMixin):
+    mid: Any = field(default=SingleObjectDescriptor(MidModel))
+    side: Any = field(
+        default=SingleObjectDescriptor(HybridSideDetails, alias="@side")
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        ImportJsonMixin.__init__(self, **kwargs)
+
+
+def test_explicit_object_dict_with_flat_siblings_maps_remaining_branches() -> None:
+    explicit_context = {"summary": {"title": "Packed title"}}
+
+    model = Aggregate(**aggregate_payload(), context=explicit_context)
+
+    assert model.context.summary.title == "Packed title"
+    assert model.summary.title == "Example title"
+    assert model.summary.note == ""
+    assert model.hierarchy.ancestor_key is None
+    assert model.metrics.elapsed == 0
+    assert model.metrics.total == 0
+
+
+def test_ready_model_under_explicit_key_with_flat_siblings_maps_remaining_branches() -> None:
+    ready_context = OptionalContext(
+        summary=ContextSummaryDetails(title="Ready title")
+    )
+
+    model = Aggregate(**aggregate_payload(), context=ready_context)
+
+    assert model.context is ready_context
+    assert model.summary.title == "Example title"
+    assert model.hierarchy.ancestor_key is None
+    assert model.metrics.total == 0
+
+
+def test_explicit_object_list_with_flat_siblings_maps_remaining_branches() -> None:
+    model = ObjectListPlusFlatRoot(
+        entries=[{"current_day": "2026-01-02T10:00:00", "caption": "first"}],
+        ancestor_key="entry-anc",
+        is_group=True,
+    )
+
+    assert model.entries[0].caption == "first"
+    assert model.entries[0].current_day.day == 2
+    assert model.details.ancestor_key == "entry-anc"
+    assert model.details.is_group is True
+
+
+def test_explicit_object_map_with_flat_siblings_maps_remaining_branches() -> None:
+    model = ObjectMapPlusFlatRoot(
+        entry_map={
+            "first": {"current_day": "2026-01-03T10:00:00", "caption": "mapped"}
+        },
+        ancestor_key="map-anc",
+        is_group=False,
+    )
+
+    assert model.entry_map["first"].caption == "mapped"
+    assert model.entry_map["first"].current_day.day == 3
+    assert model.details.ancestor_key == "map-anc"
+    assert model.details.is_group is False
+
+
 def test_explicit_optional_branch_is_excluded_from_flat_schema() -> None:
     model = Aggregate(**aggregate_payload(), context=None)
 
@@ -768,6 +880,20 @@ def test_explicit_optional_branch_is_excluded_from_flat_schema() -> None:
     assert model.hierarchy.ancestor_key is None
     assert model.metrics.total == 0
     assert model.context is None
+
+
+def test_explicit_alias_object_dict_with_flat_siblings_maps_remaining_branches() -> None:
+    explicit_context = {"summary": {"title": "Packed alias title"}}
+
+    model = AliasedAggregate(
+        **aggregate_payload(),
+        **{"@context": explicit_context},
+    )
+
+    assert model.context.summary.title == "Packed alias title"
+    assert model.summary.title == "Example title"
+    assert model.hierarchy.is_group is None
+    assert model.metrics.total == 0
 
 
 def test_explicit_optional_alias_is_excluded_from_flat_schema() -> None:
@@ -785,6 +911,51 @@ def test_explicit_optional_alias_is_excluded_from_flat_schema() -> None:
 def test_implicit_conflicting_optional_branch_still_disables_flat_import() -> None:
     with pytest.raises(MissingRequiredFieldsError, match="metrics"):
         Aggregate(**aggregate_payload())
+
+
+def test_unknown_mapping_beside_explicit_branch_still_blocks_flat_mapping() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="metrics"):
+        Aggregate(
+            **aggregate_payload(),
+            context={"summary": {"title": "Packed title"}},
+            extra={"unknown": "value"},
+        )
+
+
+def test_plain_mapping_beside_explicit_branch_still_blocks_flat_mapping() -> None:
+    with pytest.raises(MissingRequiredFieldsError, match="metrics"):
+        Aggregate(
+            **aggregate_payload(),
+            context={"summary": {"title": "Packed title"}},
+            extra=UserDict({"unknown": "value"}),
+        )
+
+
+def test_stray_mapping_descendant_outside_active_traversal_still_blocks() -> None:
+    # "note" belongs to the pruned summary subtree; a Mapping under it is not
+    # an excluded explicit object key, so it stays conservative and blocks.
+    payload = aggregate_payload()
+    payload["note"] = {"stray": "mapping"}
+
+    with pytest.raises(MissingRequiredFieldsError, match="metrics"):
+        Aggregate(**payload, summary={"title": "Packed title"}, context=None)
+
+
+def test_explicit_object_sibling_allows_flat_mapping_through_two_implicit_levels() -> None:
+    # The root "side" branch is explicit, so its key must not be forwarded:
+    # the residual flat payload reaches Deep through the implicitly selected
+    # mid and deep object levels.
+    model = HybridDeepTop(val="42", side={"title": "packed"})
+
+    assert model.mid.deep.val == 42
+    assert model.side.title == "packed"
+
+
+def test_explicit_alias_object_sibling_allows_flat_mapping_through_two_implicit_levels() -> None:
+    model = AliasedHybridDeepTop(val="42", **{"@side": {"title": "aliased"}})
+
+    assert model.mid.deep.val == 42
+    assert model.side.title == "aliased"
 
 
 def test_list_of_scalars_does_not_disable_flat_mapping() -> None:

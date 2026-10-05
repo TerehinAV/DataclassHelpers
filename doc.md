@@ -1,6 +1,6 @@
 # `ImportJsonMixin` Documentation
 
-`ImportJsonMixin` initializes dataclass models from keyword arguments. It supports field aliases, ignores unknown keys, validates required values, and can populate nested dataclasses from either explicit hierarchical values or an unambiguous flat payload.
+`ImportJsonMixin` initializes dataclass models from keyword arguments. It supports field aliases, ignores unknown keys, validates required values, and can populate nested dataclasses from explicit hierarchical values, an unambiguous flat payload, or a hybrid of both: explicit object branches are exempt from flat-shape detection, so hierarchical values and flat sibling values can coexist in one payload.
 
 ## Model Definition
 
@@ -35,17 +35,27 @@ profile = Profile(
 
 ### 2. Payload-shape check
 
-When no explicit nested value is present, the mixin examines the complete payload without consulting descriptor implementations.
+For each branch without an explicit nested value, the mixin examines the complete payload without consulting concrete descriptor implementations.
 
 Flat values are arbitrary leaves that are not instances of model classes mapped by object descriptors. This includes JSON primitives as well as domain scalar values accepted by ordinary fields or scalar descriptors, such as `date` and `datetime`. One-dimensional lists containing only such leaves are also flat.
 
 A mapping, nested list, ready mapped-model instance, or list containing mappings or ready mapped-model instances makes the payload hierarchical and disables all implicit flat mapping. Model classes are discovered through the common `ObjectFieldDescriptor` contract rather than concrete descriptor implementations.
 
-A ready model may still be supplied through an explicit object field or alias. JSON dump strings are not parsed during shape detection and remain ordinary scalar strings.
+The shape rules apply only to keys outside explicitly supplied object branches. A value under an object field name or alias present in the payload has already selected hierarchical import, so it is never inspected — an explicit dict, ready mapped model, object list, or object map can coexist with flat sibling values that the remaining active branches consume implicitly. The exemption holds only within active schema branches: a mapping under any other key, including a stray key owned by a pruned subtree, still marks the payload hierarchical.
+
+Ready models may still be supplied through an explicit object field or alias, where they are skipped by shape detection. JSON dump strings are not parsed during shape detection and remain ordinary scalar strings.
+
+```python
+profile = Profile(
+    address={"city": "Moscow", "street": "Arbat"},
+    user_name="bob",
+)
+# address is imported hierarchically while user_name stays a flat leaf.
+```
 
 ### 3. Global schema-uniqueness check
 
-The mixin recursively collects every dataclass field name and descriptor alias from the root model and nested branches that remain eligible for implicit flat mapping. When an object field is explicitly supplied by field name or alias, its descendants are excluded from the ownership graph because that branch has already selected hierarchical import.
+The mixin recursively collects every dataclass field name and descriptor alias from the root model and nested branches that remain eligible for implicit flat mapping. When an object field is explicitly supplied by field name or alias, its descendants are excluded from the ownership graph because that branch has already selected hierarchical import. Ownership collection and shape exclusion share this single pruned traversal: the present field name or alias of an explicit object branch is recorded as an excluded key at the same moment its subtree is pruned.
 
 Flat mapping is allowed only when every accepted key in the remaining active graph has exactly one owner. Any duplicate field name or alias in that graph disables implicit flat mapping, even when the conflicting key is absent from the current payload. Explicit hierarchical input continues to work for ambiguous branches.
 
@@ -76,7 +86,7 @@ explicit_order = Order(name="order-1", person=None)
 
 ### 4. Nested-model selection
 
-After the payload and schema pass their checks, at least one input key must belong to the candidate nested model. The complete flat payload is then passed through the object descriptor so deeper nested models can resolve their own fields recursively.
+After the payload and schema pass their checks, at least one input key must belong to the candidate nested model. The remaining flat payload — without the current level's explicitly supplied object keys — is then passed through the object descriptor so deeper nested models can resolve their own fields recursively.
 
 ```python
 @dataclass
